@@ -1,0 +1,27 @@
+#!/bin/bash
+set -u
+AUTH="USER:PASSWORD"
+LAN="http://192.168.101.10:19798/dav/mi11"
+PUB="https://WEBDAV_HOST/dav/mi11"
+
+echo "=== LAN PROPFIND ==="
+curl -sS -m 20 -u "$AUTH" -X PROPFIND -H "Depth: 1" -o /tmp/lan-full.xml -w "http=%{http_code}\n" "$LAN/"
+python3 - <<'PY'
+import re
+xml=open("/tmp/lan-full.xml").read()
+print("xml_len", len(xml))
+for m in re.finditer(r"<[Dd]:href>([^<]+)</[Dd]:href>", xml):
+    print("href", m.group(1))
+for m in re.finditer(r"getcontentlength>(\d+)", xml):
+    print("size", m.group(1))
+PY
+
+echo "=== LAN HEAD system.apfs ==="
+curl -sSI -m 15 -u "$AUTH" "$LAN/system.apfs" | head -n 25
+
+echo "=== PUB HEAD system.apfs ==="
+curl -sSI -m 15 -u "$AUTH" "$PUB/system.apfs" | head -n 25
+
+echo "=== local server files ==="
+ls -l /tmp/xnu-oldfd-dyldprim.img /home/shen/hakios/userland/system.apfs
+sha256sum /tmp/xnu-oldfd-dyldprim.img /home/shen/hakios/userland/system.apfs

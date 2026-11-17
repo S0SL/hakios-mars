@@ -1,0 +1,4 @@
+# HakiOS defconfig for the Xiaomi Mi 11 Pro (mars): the common kernel, the sm8350 family's facts, and this device's own.
+#include common_defconfig
+#include sm8350.config
+#include mars.config

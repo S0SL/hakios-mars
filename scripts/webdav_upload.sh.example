@@ -1,0 +1,25 @@
+#!/bin/bash
+set -eu
+BASE="https://WEBDAV_HOST/dav/mi11"
+AUTH="USER:PASSWORD"
+
+echo "=== upload boot image ==="
+curl -fsS -u "$AUTH" -T /tmp/xnu-oldfd-dyldprim.img \
+  -w "boot http=%{http_code} up=%{size_upload}\n" \
+  -o /tmp/up-boot.txt "$BASE/xnu-oldfd-dyldprim.img"
+cat /tmp/up-boot.txt
+
+echo "=== upload system.apfs (2.4G) ==="
+curl -fsS -u "$AUTH" -T /home/shen/hakios/userland/system.apfs \
+  -w "system http=%{http_code} up=%{size_upload} time=%{time_total}\n" \
+  -o /tmp/up-sys.txt "$BASE/system.apfs"
+cat /tmp/up-sys.txt
+
+echo "=== PROPFIND ==="
+curl -fsS -u "$AUTH" -X PROPFIND -H "Depth: 1" -o /tmp/up-list.xml "$BASE/"
+python3 - <<'PY'
+import re
+xml = open("/tmp/up-list.xml").read()
+for m in re.finditer(r"<D:href>([^<]+)</D:href>.*?<D:getcontentlength>(\d+)</D:getcontentlength>", xml, re.S):
+    print(m.group(1), m.group(2))
+PY

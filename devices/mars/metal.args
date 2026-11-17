@@ -1,0 +1,9 @@
+# what tools/metal-run.sh gives this phone (docs/porting/index.md): its big core and cores, its panel's rate,
+# how many threads copy frames, how often the touch screen is read. A line of boot-arguments; # is a comment.
+#
+# mars: 8 cores, the biggest is core 7 (Cortex-X1); a 1440x3200 panel at 120 Hz.
+bootcpu=7 cpus=8 fb_hz=120 fb_threads=4 touch_poll_us=4000
+#
+# Not here yet: fb_intf=<physical>, the display interface's registers that fb_beam reads so that frames are written behind
+# the panel's scan. They are known for sc7280 only; on another SoC nothing is read and frames go on their beat. SM8350's are
+# in Linux's msm-5.4 tree (the DSI/display controller of "lahaina") and in the phone's own device tree.

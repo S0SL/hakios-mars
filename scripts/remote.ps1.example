@@ -1,0 +1,10 @@
+param([Parameter(Mandatory=$true, ValueFromPipeline=$true)][string]$Command)
+# Run a thin shell wrapper on the remote build box. Base64 keeps CRLF conversion
+# and PowerShell quoting from corrupting the actual script.
+$encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Command))
+$env:SSH_ASKPASS = Join-Path $env:TEMP "askpass.bat"
+$env:SSH_ASKPASS_REQUIRE = "force"
+$env:DISPLAY = "localhost:0"
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o NumberOfPasswordPrompts=1 `
+    -p SSH_PORT USER@BUILD_SERVER "echo $encoded | base64 -d | bash" 2>&1
+exit $LASTEXITCODE

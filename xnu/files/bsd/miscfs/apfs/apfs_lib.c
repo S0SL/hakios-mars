@@ -1043,10 +1043,14 @@ apfs_nx_open(struct apfs_nx *nx, const struct apfs_dev *dev)
 	}
 	error = nx->dev.read(nx->dev.ctx, 0, block0, APFS_NX_MINIMUM_BLOCK_SIZE);
 	if (error) {
+		apfs_log("container block zero read failed: %d\n", error);
 		goto out;
 	}
 	error = EINVAL;
 	if (le32(block0 + 32) != APFS_NX_MAGIC) {
+		apfs_log("container block zero has no NXSB: first %08x %08x %08x %08x %08x %08x\n",
+		    le32(block0), le32(block0 + 4), le32(block0 + 8), le32(block0 + 12),
+		    le32(block0 + 16), le32(block0 + 20));
 		goto out;           /* not an APFS container; let the caller try something else */
 	}
 	bs = le32(block0 + 36);
@@ -1579,6 +1583,17 @@ apfs_inode_get(struct apfs_vol *vol, uint64_t obj_id, struct apfs_inode *ino)
 		ino->alloced_size = le64(xf + 8);
 		ino->has_dstream = true;
 	}
+	if (ino->obj_id == 60966) {
+		apfs_log("inode trace: obj %llu parent %llu private %llu mode %x flags %llx "
+		    "size %llu alloc %llu val_len %u xf_num %u xf0 %x/%u xf1 %x/%u\n",
+		    (unsigned long long)ino->obj_id, (unsigned long long)ino->parent_id,
+		    (unsigned long long)ino->private_id, (unsigned)ino->mode,
+		    (unsigned long long)ino->internal_flags, (unsigned long long)ino->size,
+		    (unsigned long long)ino->alloced_size, (unsigned)rec.val_len,
+		    (unsigned)le16(rec.val + 92), (unsigned)rec.val[96],
+		    (unsigned)le16(rec.val + 98), (unsigned)rec.val[100],
+		    (unsigned)le16(rec.val + 102));
+	}
 	xf = rec.val + 92;
 	xf_len = (uint16_t)(rec.val_len - 92);
 	if (xfields_find(xf, xf_len, APFS_INO_EXT_TYPE_RDEV, &xf, &xf_len) == 0 &&
@@ -1948,9 +1963,16 @@ apfs_lookup(struct apfs_vol *vol, uint64_t dir_id, const char *name, size_t name
     uint64_t *file_id, uint8_t *d_type)
 {
 	struct lookup_ctx lc;
+	const bool trace = dir_id == APFS_ROOT_DIR_INO_NUM && name_len == 7 &&
+	    memcmp(name, "launchd", 7) == 0;
 	int error;
 
 	error = lookup_hashed(vol, dir_id, name, name_len, file_id, d_type);
+	if (trace) {
+		apfs_log("lookup trace: launchd hashed result %d id %llu type %u\n", error,
+		    (unsigned long long)(file_id != NULL ? *file_id : 0),
+		    (unsigned)(d_type != NULL ? *d_type : 0));
+	}
 	if (error != EAGAIN) {
 		vol->nx->lookups_hashed++;
 		return error;
@@ -1972,6 +1994,10 @@ apfs_lookup(struct apfs_vol *vol, uint64_t dir_id, const char *name, size_t name
 	}
 	if (d_type != NULL) {
 		*d_type = lc.d_type;
+	}
+	if (trace) {
+		apfs_log("lookup trace: launchd scanned result id %llu type %u\n",
+		    (unsigned long long)lc.file_id, (unsigned)lc.d_type);
 	}
 	return 0;
 }

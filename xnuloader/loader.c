@@ -94,6 +94,8 @@ static efi_handle IMAGE;
 static char log_buf[32768];
 static uint32_t log_len;
 
+static void fb_putc(char c);
+
 void *
 memset(void *dst, int c, size_t n)
 {
@@ -180,6 +182,7 @@ static int screen_quiet;
  * line core 0 printed during a run (the storage's, the battery's, the watchdog's) ran over the system's screen.
  * What it was before the run, to go back to.
  */
+
 static int screen_quiet_before_run;
 
 static void
@@ -189,6 +192,10 @@ put_char(char c)
 
 	if (log_len < sizeof(log_buf) - 1) {
 		log_buf[log_len++] = c;
+	}
+	/* Once the kernel owns the panel, drawing loader lines over it makes panic text unreadable. */
+	if (!screen_quiet) {
+		fb_putc(c);
 	}
 	if (ST->con_out != NULL && !screen_quiet) {
 		if (c == '\n') {
@@ -303,6 +310,42 @@ find_log_partition(void)
 	return NULL;
 }
 
+/* The Darwin partition, for a log copy Android's next boot cannot overwrite (logdump can be reused). */
+static efi_block_io *
+find_darwin_partition(void)
+{
+	static const efi_guid part_guid = EFI_PARTITION_INFO_GUID;
+	static const efi_guid blk_guid = EFI_BLOCK_IO_GUID;
+	static const char16 want[] = u"darwin";
+	efi_handle *handles;
+	uint64_t count;
+
+	if (EFI_ERROR(BS->locate_handle_buffer(ByProtocol, &part_guid, NULL, &count, &handles))) {
+		return NULL;
+	}
+	for (uint64_t i = 0; i < count; i++) {
+		efi_partition_info *info;
+		efi_block_io *bio;
+		int match = 1;
+
+		if (EFI_ERROR(BS->handle_protocol(handles[i], &part_guid, (void **)&info)) || info->type != 2) {
+			continue;
+		}
+		for (unsigned k = 0; k < sizeof(want) / sizeof(want[0]); k++) {
+			if (info->name[k] != want[k]) {
+				match = 0;
+				break;
+			}
+		}
+		if (match && !EFI_ERROR(BS->handle_protocol(handles[i], &blk_guid, (void **)&bio))) {
+			BS->free_pool(handles);
+			return bio;
+		}
+	}
+	BS->free_pool(handles);
+	return NULL;
+}
+
 /*
  * The "staged" buffer holds the loader log followed by the kernel log of the
  * last run. It is what gets written to the log partition and what the host
@@ -346,6 +389,105 @@ compose_logs(const char *klog, uint64_t klog_len)
 }
 
 static int hc_list_is_uefis(void);
+
+/*
+ * Persist the staged log where the host can still read it after Android boots.
+ * logdump is wiped by Android; darwin is not.  Try several offsets that are
+ * known-safe (past system.apfs / UFS_WRITE_FIRST / 8 GiB / partition end) and
+ * print every EFI status so a failure is visible on the console.
+ */
+#define DARWIN_LOG_BYTE_OFF   0x200000000ULL /* 8 GiB */
+#define DARWIN_LOG_BYTE_PERS  0x1F3000000ULL /* same area init uses (PERSIST_LOG_BASE) */
+#define DARWIN_LOG_BYTE_3G    0xC0000000ULL  /* 3 GiB, after the 2.47 GB system.apfs */
+
+static void
+write_darwin_log(void)
+{
+	efi_block_io *bio = find_darwin_partition();
+	uint64_t bs, blocks, end_lba;
+	efi_status status = 0xFFFFFFFFULL, read_status = 0;
+	int same = 0;
+	struct {
+		const char *name;
+		uint64_t byte_off;
+	} try_at[5];
+	int ntry, i;
+
+	if (bio == NULL || bio->media == NULL || staged_len == 0) {
+		print("log: darwin copy skipped (bio=%x staged=%d)\n",
+		    (uint64_t)(uintptr_t)bio, (uint64_t)staged_len);
+		return;
+	}
+	bs = bio->media->block_size;
+	if (bs == 0) {
+		print("log: darwin copy skipped (block_size 0)\n");
+		return;
+	}
+	blocks = (staged_len + bs - 1) / bs;
+	print("log: darwin media id=%x bs=%d last=%x ro=%x present=%x io_align=%x staged=%d blocks=%d\n",
+	    (uint64_t)bio->media->media_id, (uint64_t)bs,
+	    (uint64_t)bio->media->last_block, (uint64_t)bio->media->read_only,
+	    (uint64_t)bio->media->present, (uint64_t)bio->media->io_align,
+	    (uint64_t)staged_len, (uint64_t)blocks);
+	if (bio->media->read_only) {
+		print("log: darwin media is read-only, copy skipped\n");
+		return;
+	}
+	if (bio->media->last_block + 1 < blocks || blocks > sizeof(out_buf) / bs) {
+		print("log: darwin copy does not fit (%d blocks)\n", (uint64_t)blocks);
+		return;
+	}
+	end_lba = bio->media->last_block + 1 - blocks;
+	if (!hc_list_is_uefis()) {
+		print("log: darwin copy skipped (UEFI transfer list not in the controller)\n");
+		return;
+	}
+
+	ntry = 0;
+	try_at[ntry].name = "8GiB";
+	try_at[ntry++].byte_off = DARWIN_LOG_BYTE_OFF;
+	try_at[ntry].name = "persist";
+	try_at[ntry++].byte_off = DARWIN_LOG_BYTE_PERS;
+	try_at[ntry].name = "3GiB";
+	try_at[ntry++].byte_off = DARWIN_LOG_BYTE_3G;
+	try_at[ntry].name = "partend";
+	try_at[ntry++].byte_off = (uint64_t)end_lba * bs;
+
+	for (i = 0; i < ntry; i++) {
+		uint64_t want_lba = try_at[i].byte_off / bs;
+
+		if (want_lba + blocks > bio->media->last_block + 1) {
+			print("log: darwin try %s lba=%x out of range (last=%x)\n",
+			    try_at[i].name, (uint64_t)want_lba, (uint64_t)bio->media->last_block);
+			continue;
+		}
+		/* UEFI WriteBlocks/ReadBlocks take BufferSize in bytes, not a block count. */
+		status = bio->write_blocks(bio, bio->media->media_id, want_lba, blocks * bs, out_buf);
+		print("log: darwin try %s lba=%x byte=%x write=%x\n",
+		    try_at[i].name, (uint64_t)want_lba, (uint64_t)(want_lba * bs), (uint64_t)status);
+		if (EFI_ERROR(status)) {
+			continue;
+		}
+		bio->flush_blocks(bio);
+		read_status = bio->read_blocks(bio, bio->media->media_id, want_lba, blocks * bs, log_verify);
+		flush_dcache((uint64_t)(uintptr_t)log_verify, (uint64_t)(uintptr_t)log_verify + blocks * bs);
+		same = !EFI_ERROR(read_status) && memcmp(log_verify, out_buf, blocks * bs) == 0;
+		print("log: %d bytes copied to darwin at %s lba=%x (byte %x), read=%s (%x)\n",
+		    (uint64_t)(blocks * bs), try_at[i].name, (uint64_t)want_lba,
+		    (uint64_t)(want_lba * bs),
+		    EFI_ERROR(read_status) ? "not tried" : same ? "the same" : "DIFFERENT",
+		    (uint64_t)read_status);
+		if (same) {
+			print("log: HOST EXTRACT: dd if=darwin bs=%d skip=%d count=%d\n",
+			    (uint64_t)bs, (uint64_t)want_lba, (uint64_t)blocks);
+			return;
+		}
+	}
+	print("log: darwin copy FAILED at all offsets (last write=%x read=%x)\n",
+	    (uint64_t)status, (uint64_t)read_status);
+}
+
+static int hc_list_is_uefis(void);
 static int hc_log_skips;                /* logs not written this run (said twice at most) */
 static void hc_print_state(const char *when);
 static void hc_take_back(const char *when);
@@ -356,8 +498,32 @@ write_logs(const char *klog, uint64_t klog_len)
 	efi_block_io *bio = find_log_partition();
 
 	compose_logs(klog, klog_len);
-	if (bio == NULL) {
-		/* No log partition (QEMU): echo the returned kernel log on the console instead. */
+	/*
+	 * logdump first: this write has been proven to succeed on this phone.
+	 * Android reuses logdump on the next boot, so it is only a fetch window
+	 * until Android starts; the darwin copy is what survives.
+	 */
+	if (bio != NULL && hc_list_is_uefis()) {
+		uint64_t bs = bio->media->block_size;
+		uint64_t len = (staged_len + 1 + bs - 1) / bs * bs;
+		efi_status ws, rs = 0;
+		int same = 0;
+
+		if (bs != 0) {
+			ws = bio->write_blocks(bio, bio->media->media_id, 0, len, out_buf);
+			if (!EFI_ERROR(ws)) {
+				bio->flush_blocks(bio);
+				if (len <= sizeof(log_verify)) {
+					rs = bio->read_blocks(bio, bio->media->media_id, 0, len, log_verify);
+					flush_dcache((uint64_t)(uintptr_t)log_verify,
+					    (uint64_t)(uintptr_t)log_verify + len);
+					same = !EFI_ERROR(rs) && memcmp(log_verify, out_buf, len) == 0;
+				}
+			}
+			print("log: %d bytes written to logdump (%x), read back %s (%x)\n", len, ws,
+			    EFI_ERROR(ws) ? "not tried" : same ? "the same" : "DIFFERENT", rs);
+		}
+	} else if (bio == NULL) {
 		if (klog != NULL) {
 			print("\n== KERNEL LOG ==\n");
 			for (uint64_t i = 0; i < klog_len; i++) {
@@ -365,39 +531,13 @@ write_logs(const char *klog, uint64_t klog_len)
 			}
 			print("\n== END OF LOG ==\n");
 		}
-		return;
+	} else if (hc_log_skips++ < 2) {
+		hc_print_state("log not written");
+		print("log: NOT WRITTEN to logdump: UEFI's transfer list is not the one in the controller\n");
 	}
-	uint64_t bs = bio->media->block_size;
-	uint64_t len = (staged_len + 1 + bs - 1) / bs * bs;
-	efi_status ws, rs = 0;
-	int same = 0;
 
-	/* only through UEFI's own transfer list (see hc_take_back) */
-	if (!hc_list_is_uefis()) {
-		if (hc_log_skips++ < 2) {
-			hc_print_state("log not written");
-			print("log: NOT WRITTEN to logdump: UEFI's transfer list is not the one in the controller\n");
-		}
-		compose_logs(klog, klog_len);
-		return;
-	}
-	ws = bio->write_blocks(bio, bio->media->media_id, 0, len, out_buf);
-
-	if (!EFI_ERROR(ws)) {
-		bio->flush_blocks(bio);
-		/*
-		 * And read back: that the log is in the partition is what a run of the kernel's own UFS
-		 * driver must leave possible (the controller is shared with this one). The line goes into
-		 * the copy the host fetches over USB, not into the partition, which already has the rest.
-		 */
-		if (len <= sizeof(log_verify)) {
-			rs = bio->read_blocks(bio, bio->media->media_id, 0, len, log_verify);
-			flush_dcache((uint64_t)(uintptr_t)log_verify, (uint64_t)(uintptr_t)log_verify + len);
-			same = !EFI_ERROR(rs) && memcmp(log_verify, out_buf, len) == 0;
-		}
-	}
-	print("log: %d bytes written to logdump (%x), read back %s (%x)\n", len, ws,
-	    EFI_ERROR(ws) ? "not tried" : same ? "the same" : "DIFFERENT", rs);
+	/* darwin copy: what the host still has after Android boots */
+	write_darwin_log();
 	compose_logs(klog, klog_len);
 }
 
@@ -405,6 +545,47 @@ static void
 flush_log(void)
 {
 	write_logs(NULL, 0);
+}
+
+/*
+ * Persist whatever compose_live_log / compose_logs last put in out_buf
+ * (staged_len).  Unlike write_logs() this does not recompose, so the live
+ * kernel log appended by compose_live_log survives the write.
+ */
+static void
+persist_staged(const char *tag)
+{
+	efi_block_io *bio = find_log_partition();
+	uint64_t bs, len;
+	efi_status ws = 0, rs = 0;
+	int same = 0;
+
+	if (staged_len == 0) {
+		return;
+	}
+	write_darwin_log();
+	if (bio == NULL || bio->media == NULL) {
+		return;
+	}
+	bs = bio->media->block_size;
+	if (bs == 0 || !hc_list_is_uefis()) {
+		return;
+	}
+	len = (staged_len + 1 + bs - 1) / bs * bs;
+	ws = bio->write_blocks(bio, bio->media->media_id, 0, len, out_buf);
+	if (!EFI_ERROR(ws)) {
+		bio->flush_blocks(bio);
+		if (len <= sizeof(log_verify)) {
+			rs = bio->read_blocks(bio, bio->media->media_id, 0, len, log_verify);
+			flush_dcache((uint64_t)(uintptr_t)log_verify, (uint64_t)(uintptr_t)log_verify + len);
+			same = !EFI_ERROR(rs) && memcmp(log_verify, out_buf, len) == 0;
+		}
+	}
+	if (tag != NULL) {
+		print("log[%s]: staged %d -> logdump %x read %s, darwin copy attempted\n",
+		    tag, (uint64_t)staged_len, (uint64_t)ws,
+		    EFI_ERROR(ws) ? "not tried" : same ? "the same" : "DIFFERENT");
+	}
 }
 
 /* ------------------------------------------------------------------------ */
@@ -599,9 +780,9 @@ static const struct platform platform_redwood = {
 static void
 reboot(void)
 {
-	hc_take_back("before the reset");
-	flush_log();
-	ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
+	/* PORT: hold instead of resetting. A cold reset inside a `fastboot boot` session is what drops this phone
+	 * into EDL, and it also throws away the screen that says how far the boot got. */
+	print("\n== halted; power-cycle the phone ==\n");
 	for (;;) {
 	}
 }
@@ -749,29 +930,122 @@ jump_to_kernel(uint64_t entry, uint64_t boot_args_pa)
 {
 	__asm__ volatile (
                 "msr daifset, #0xf\n"
-                /* Last thing before the MMU goes off: write this stack back to RAM
-                 * (dirty cache lines do not survive, and we come back to this frame). */
-                "mov x2, sp\n"
-                "sub x2, x2, #0x400\n"
-                "bic x2, x2, #63\n"
-                "add x3, x2, #0x4000\n"
-                "1: dc cvac, x2\n"
-                "add x2, x2, #64\n"
-                "cmp x2, x3\n"
-                "b.lo 1b\n"
+                /* The caller has already cleaned loader memory. Do not walk a guessed
+                 * window around SP here: on mars it crosses an unmapped stack boundary
+                 * and turns the handoff into a silent synchronous abort (stub17). */
                 "dsb sy\n"
+                "ic iallu\n"
+                "dsb sy\n"
+                "isb\n"
                 "mrs x2, sctlr_el1\n"
+                /* mars/SM8350: one MSR that clears all three bits silently kills the
+                 * core. Staged writes with ISB pass on hardware (stub13). */
                 "bic x2, x2, #0x1\n"    /* M: MMU off */
+                "msr sctlr_el1, x2\n"
+                "isb\n"
                 "bic x2, x2, #0x4\n"    /* C: data cache off */
+                "msr sctlr_el1, x2\n"
+                "isb\n"
                 "bic x2, x2, #0x1000\n" /* I: instruction cache off */
                 "msr sctlr_el1, x2\n"
                 "isb\n"
-                "ic iallu\n"
+                "tlbi vmalle1\n"
                 "dsb sy\n"
                 "isb\n"
                 "mov x0, %1\n"
                 "br %0\n"
-                : : "r" (entry), "r" (boot_args_pa) : "x0", "x2", "x3");
+                : : "r" (entry), "r" (boot_args_pa) : "x0", "x2", "x3", "x4", "x5", "memory");
+	__builtin_unreachable();
+}
+
+__attribute__((noreturn)) static void
+jump_test_mask(uint64_t entry, uint64_t clear_mask)
+{
+	__asm__ volatile (
+		"msr daifset, #0xf\n"
+		"mrs x2, sctlr_el1\n"
+		"bic x2, x2, %1\n"
+		"msr sctlr_el1, x2\n"
+		"isb\n"
+		"mov x0, #0\n"
+		"br %0\n"
+		: : "r" (entry), "r" (clear_mask) : "x0", "x2", "memory");
+	__builtin_unreachable();
+}
+
+__attribute__((noreturn)) static void
+jump_test_mci(uint64_t entry)
+{
+	__asm__ volatile (
+		"msr daifset, #0xf\n"
+		"mrs x2, sctlr_el1\n"
+		"bic x2, x2, #0x1\n"    "msr sctlr_el1, x2\n" "isb\n"
+		"bic x2, x2, #0x4\n"    "msr sctlr_el1, x2\n" "isb\n"
+		"bic x2, x2, #0x1000\n" "msr sctlr_el1, x2\n" "isb\n"
+		"mov x0, #0\nbr %0\n" : : "r" (entry) : "x0", "x2", "memory");
+	__builtin_unreachable();
+}
+
+static void
+jump_test_flush_stack(void)
+{
+	__asm__ volatile (
+		"mov x2, sp\n"
+		"sub x2, x2, #0x400\n"
+		"mrs x3, ctr_el0\n"
+		"ubfx x3, x3, #16, #4\n"
+		"mov x4, #4\n"
+		"lsl x4, x4, x3\n"
+		"sub x5, x4, #1\n"
+		"bic x2, x2, x5\n"
+		"add x3, x2, #0x4000\n"
+		"1: dc cvac, x2\n"
+		"add x2, x2, x4\n"
+		"cmp x2, x3\n"
+		"b.lo 1b\n"
+		"dsb sy\n"
+		: : : "x2", "x3", "x4", "x5", "memory");
+}
+
+__attribute__((noreturn)) static void
+jump_test_mci_tlbi(uint64_t entry)
+{
+	__asm__ volatile (
+		"msr daifset, #0xf\n"
+		"mrs x2, sctlr_el1\n"
+		"bic x2, x2, #0x1\n"    "msr sctlr_el1, x2\n" "isb\n"
+		"bic x2, x2, #0x4\n"    "msr sctlr_el1, x2\n" "isb\n"
+		"bic x2, x2, #0x1000\n" "msr sctlr_el1, x2\n" "isb\n"
+		"tlbi vmalle1\n"
+		"dsb sy\n"
+		"isb\n"
+		"mov x0, #0\nbr %0\n" : : "r" (entry) : "x0", "x2", "memory");
+	__builtin_unreachable();
+}
+
+__attribute__((noreturn)) static void
+jump_test_icm(uint64_t entry)
+{
+	__asm__ volatile (
+		"msr daifset, #0xf\n"
+		"mrs x2, sctlr_el1\n"
+		"bic x2, x2, #0x1000\n" "msr sctlr_el1, x2\n" "isb\n"
+		"bic x2, x2, #0x4\n"    "msr sctlr_el1, x2\n" "isb\n"
+		"bic x2, x2, #0x1\n"    "msr sctlr_el1, x2\n" "isb\n"
+		"mov x0, #0\nbr %0\n" : : "r" (entry) : "x0", "x2", "memory");
+	__builtin_unreachable();
+}
+
+__attribute__((noreturn)) static void
+jump_test_cmi(uint64_t entry)
+{
+	__asm__ volatile (
+		"msr daifset, #0xf\n"
+		"mrs x2, sctlr_el1\n"
+		"bic x2, x2, #0x4\n"    "msr sctlr_el1, x2\n" "isb\n"
+		"bic x2, x2, #0x1\n"    "msr sctlr_el1, x2\n" "isb\n"
+		"bic x2, x2, #0x1000\n" "msr sctlr_el1, x2\n" "isb\n"
+		"mov x0, #0\nbr %0\n" : : "r" (entry) : "x0", "x2", "memory");
 	__builtin_unreachable();
 }
 
@@ -821,9 +1095,16 @@ __asm__ (
         "  msr cpacr_el1, x9\n"
         "  ldr x9, [x10, #24]\n"
         "  bic x9, x9, #0x1\n"
+        "  msr sctlr_el1, x9\n"
+        "  isb\n"
         "  bic x9, x9, #0x4\n"
+        "  msr sctlr_el1, x9\n"
+        "  isb\n"
         "  bic x9, x9, #0x1000\n"
         "  msr sctlr_el1, x9\n"
+        "  isb\n"
+        "  tlbi vmalle1\n"
+        "  dsb sy\n"
         "  isb\n"
         "  adrp x9, other_cpu_stage\n"
         "  add  x9, x9, :lo12:other_cpu_stage\n"
@@ -977,7 +1258,7 @@ static uint64_t sound_len;
 #define OTHER_CPU_HUNG          1001    /* ... the kernel stopped giving signs of life */
 #define START_SECONDS           5
 #define SILENCE_SECONDS         50
-#define NOTE_SECONDS            24      /* how long the kernel's progress is written down as it happens */
+#define NOTE_SECONDS            180     /* keep persisting the live kernel log through SpringBoard boot */
 
 static void wdt_pet(void);
 static int wdt_armed;
@@ -2363,10 +2644,17 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 			if (PLAT->log_other_cpu) {
 				if (!arrived) {
 					print("%d s: the core has not arrived\n", noted);
+					flush_log();
 				} else {
 					note_kernel_progress(live, slide, noted);
+					/*
+					 * Persist the full live kernel log, not just the loader
+					 * tail: a long SpringBoard run is lost on power-cycle
+					 * if only flush_log() ran in the first 24 seconds.
+					 */
+					compose_live_log(live, slide);
+					persist_staged("live");
 				}
-				flush_log();
 			}
 		}
 		/*
@@ -2713,6 +3001,183 @@ static struct {
 	uint64_t base;
 	uint32_t width, height, stride;
 } SCREEN;
+
+/* ------------------------------------------------------------------------ */
+/* A screen of our own: 8x8 glyphs drawn straight onto the firmware's frame-  */
+/* buffer. ConOut is unusable on some phones (its console mode never takes),  */
+/* so everything the loader prints also goes here.                            */
+/* ------------------------------------------------------------------------ */
+
+static const unsigned char font8x8[95][8] = {
+	{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
+	{ 0x18, 0x3c, 0x3c, 0x18, 0x18, 0x00, 0x18, 0x00 },
+	{ 0x36, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
+	{ 0x36, 0x36, 0x7f, 0x36, 0x7f, 0x36, 0x36, 0x00 },
+	{ 0x0c, 0x3e, 0x03, 0x1e, 0x30, 0x1f, 0x0c, 0x00 },
+	{ 0x00, 0x63, 0x33, 0x18, 0x0c, 0x66, 0x63, 0x00 },
+	{ 0x1c, 0x36, 0x1c, 0x6e, 0x3b, 0x33, 0x6e, 0x00 },
+	{ 0x06, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00 },
+	{ 0x18, 0x0c, 0x06, 0x06, 0x06, 0x0c, 0x18, 0x00 },
+	{ 0x06, 0x0c, 0x18, 0x18, 0x18, 0x0c, 0x06, 0x00 },
+	{ 0x00, 0x66, 0x3c, 0xff, 0x3c, 0x66, 0x00, 0x00 },
+	{ 0x00, 0x0c, 0x0c, 0x3f, 0x0c, 0x0c, 0x00, 0x00 },
+	{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c, 0x06 },
+	{ 0x00, 0x00, 0x00, 0x3f, 0x00, 0x00, 0x00, 0x00 },
+	{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c, 0x00 },
+	{ 0x60, 0x30, 0x18, 0x0c, 0x06, 0x03, 0x01, 0x00 },
+	{ 0x3e, 0x63, 0x73, 0x7b, 0x6f, 0x67, 0x3e, 0x00 },
+	{ 0x0c, 0x0e, 0x0c, 0x0c, 0x0c, 0x0c, 0x3f, 0x00 },
+	{ 0x1e, 0x33, 0x30, 0x1c, 0x06, 0x33, 0x3f, 0x00 },
+	{ 0x1e, 0x33, 0x30, 0x1c, 0x30, 0x33, 0x1e, 0x00 },
+	{ 0x38, 0x3c, 0x36, 0x33, 0x7f, 0x30, 0x78, 0x00 },
+	{ 0x3f, 0x03, 0x1f, 0x30, 0x30, 0x33, 0x1e, 0x00 },
+	{ 0x1c, 0x06, 0x03, 0x1f, 0x33, 0x33, 0x1e, 0x00 },
+	{ 0x3f, 0x33, 0x30, 0x18, 0x0c, 0x0c, 0x0c, 0x00 },
+	{ 0x1e, 0x33, 0x33, 0x1e, 0x33, 0x33, 0x1e, 0x00 },
+	{ 0x1e, 0x33, 0x33, 0x3e, 0x30, 0x18, 0x0e, 0x00 },
+	{ 0x00, 0x0c, 0x0c, 0x00, 0x00, 0x0c, 0x0c, 0x00 },
+	{ 0x00, 0x0c, 0x0c, 0x00, 0x00, 0x0c, 0x0c, 0x06 },
+	{ 0x18, 0x0c, 0x06, 0x03, 0x06, 0x0c, 0x18, 0x00 },
+	{ 0x00, 0x00, 0x3f, 0x00, 0x00, 0x3f, 0x00, 0x00 },
+	{ 0x06, 0x0c, 0x18, 0x30, 0x18, 0x0c, 0x06, 0x00 },
+	{ 0x1e, 0x33, 0x30, 0x18, 0x0c, 0x00, 0x0c, 0x00 },
+	{ 0x3e, 0x63, 0x7b, 0x7b, 0x7b, 0x03, 0x1e, 0x00 },
+	{ 0x0c, 0x1e, 0x33, 0x33, 0x3f, 0x33, 0x33, 0x00 },
+	{ 0x3f, 0x66, 0x66, 0x3e, 0x66, 0x66, 0x3f, 0x00 },
+	{ 0x3c, 0x66, 0x03, 0x03, 0x03, 0x66, 0x3c, 0x00 },
+	{ 0x1f, 0x36, 0x66, 0x66, 0x66, 0x36, 0x1f, 0x00 },
+	{ 0x7f, 0x46, 0x16, 0x1e, 0x16, 0x46, 0x7f, 0x00 },
+	{ 0x7f, 0x46, 0x16, 0x1e, 0x16, 0x06, 0x0f, 0x00 },
+	{ 0x3c, 0x66, 0x03, 0x03, 0x73, 0x66, 0x7c, 0x00 },
+	{ 0x33, 0x33, 0x33, 0x3f, 0x33, 0x33, 0x33, 0x00 },
+	{ 0x1e, 0x0c, 0x0c, 0x0c, 0x0c, 0x0c, 0x1e, 0x00 },
+	{ 0x78, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1e, 0x00 },
+	{ 0x67, 0x66, 0x36, 0x1e, 0x36, 0x66, 0x67, 0x00 },
+	{ 0x0f, 0x06, 0x06, 0x06, 0x46, 0x66, 0x7f, 0x00 },
+	{ 0x63, 0x77, 0x7f, 0x7f, 0x6b, 0x63, 0x63, 0x00 },
+	{ 0x63, 0x67, 0x6f, 0x7b, 0x73, 0x63, 0x63, 0x00 },
+	{ 0x1c, 0x36, 0x63, 0x63, 0x63, 0x36, 0x1c, 0x00 },
+	{ 0x3f, 0x66, 0x66, 0x3e, 0x06, 0x06, 0x0f, 0x00 },
+	{ 0x1e, 0x33, 0x33, 0x33, 0x3b, 0x1e, 0x38, 0x00 },
+	{ 0x3f, 0x66, 0x66, 0x3e, 0x36, 0x66, 0x67, 0x00 },
+	{ 0x1e, 0x33, 0x07, 0x0e, 0x38, 0x33, 0x1e, 0x00 },
+	{ 0x3f, 0x2d, 0x0c, 0x0c, 0x0c, 0x0c, 0x1e, 0x00 },
+	{ 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x3f, 0x00 },
+	{ 0x33, 0x33, 0x33, 0x33, 0x33, 0x1e, 0x0c, 0x00 },
+	{ 0x63, 0x63, 0x63, 0x6b, 0x7f, 0x77, 0x63, 0x00 },
+	{ 0x63, 0x63, 0x36, 0x1c, 0x1c, 0x36, 0x63, 0x00 },
+	{ 0x33, 0x33, 0x33, 0x1e, 0x0c, 0x0c, 0x1e, 0x00 },
+	{ 0x7f, 0x63, 0x31, 0x18, 0x4c, 0x66, 0x7f, 0x00 },
+	{ 0x1e, 0x06, 0x06, 0x06, 0x06, 0x06, 0x1e, 0x00 },
+	{ 0x03, 0x06, 0x0c, 0x18, 0x30, 0x60, 0x40, 0x00 },
+	{ 0x1e, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1e, 0x00 },
+	{ 0x08, 0x1c, 0x36, 0x63, 0x00, 0x00, 0x00, 0x00 },
+	{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff },
+	{ 0x0c, 0x0c, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00 },
+	{ 0x00, 0x00, 0x1e, 0x30, 0x3e, 0x33, 0x6e, 0x00 },
+	{ 0x07, 0x06, 0x06, 0x3e, 0x66, 0x66, 0x3b, 0x00 },
+	{ 0x00, 0x00, 0x1e, 0x33, 0x03, 0x33, 0x1e, 0x00 },
+	{ 0x38, 0x30, 0x30, 0x3e, 0x33, 0x33, 0x6e, 0x00 },
+	{ 0x00, 0x00, 0x1e, 0x33, 0x3f, 0x03, 0x1e, 0x00 },
+	{ 0x1c, 0x36, 0x06, 0x0f, 0x06, 0x06, 0x0f, 0x00 },
+	{ 0x00, 0x00, 0x6e, 0x33, 0x33, 0x3e, 0x30, 0x1f },
+	{ 0x07, 0x06, 0x36, 0x6e, 0x66, 0x66, 0x67, 0x00 },
+	{ 0x0c, 0x00, 0x0e, 0x0c, 0x0c, 0x0c, 0x1e, 0x00 },
+	{ 0x30, 0x00, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1e },
+	{ 0x07, 0x06, 0x66, 0x36, 0x1e, 0x36, 0x67, 0x00 },
+	{ 0x0e, 0x0c, 0x0c, 0x0c, 0x0c, 0x0c, 0x1e, 0x00 },
+	{ 0x00, 0x00, 0x33, 0x7f, 0x7f, 0x6b, 0x63, 0x00 },
+	{ 0x00, 0x00, 0x1f, 0x33, 0x33, 0x33, 0x33, 0x00 },
+	{ 0x00, 0x00, 0x1e, 0x33, 0x33, 0x33, 0x1e, 0x00 },
+	{ 0x00, 0x00, 0x3b, 0x66, 0x66, 0x3e, 0x06, 0x0f },
+	{ 0x00, 0x00, 0x6e, 0x33, 0x33, 0x3e, 0x30, 0x78 },
+	{ 0x00, 0x00, 0x3b, 0x6e, 0x66, 0x06, 0x0f, 0x00 },
+	{ 0x00, 0x00, 0x3e, 0x03, 0x1e, 0x30, 0x1f, 0x00 },
+	{ 0x08, 0x0c, 0x3e, 0x0c, 0x0c, 0x2c, 0x18, 0x00 },
+	{ 0x00, 0x00, 0x33, 0x33, 0x33, 0x33, 0x6e, 0x00 },
+	{ 0x00, 0x00, 0x33, 0x33, 0x33, 0x1e, 0x0c, 0x00 },
+	{ 0x00, 0x00, 0x63, 0x6b, 0x7f, 0x7f, 0x36, 0x00 },
+	{ 0x00, 0x00, 0x63, 0x36, 0x1c, 0x36, 0x63, 0x00 },
+	{ 0x00, 0x00, 0x33, 0x33, 0x33, 0x3e, 0x30, 0x1f },
+	{ 0x00, 0x00, 0x3f, 0x19, 0x0c, 0x26, 0x3f, 0x00 },
+	{ 0x38, 0x0c, 0x0c, 0x07, 0x0c, 0x0c, 0x38, 0x00 },
+	{ 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x18, 0x00 },
+	{ 0x07, 0x0c, 0x0c, 0x38, 0x0c, 0x0c, 0x07, 0x00 },
+	{ 0x6e, 0x3b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
+};
+
+static uint32_t fb_x, fb_y;
+#define FB_CELL 16u                     /* 8x8 glyphs, drawn at twice their size */
+
+static void
+fb_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t colour)
+{
+	uint8_t *base = (uint8_t *)(unsigned long long)SCREEN.base;
+
+	for (uint32_t row = 0; row < h; row++) {
+		uint32_t *p = (uint32_t *)(base + (unsigned long long)(y + row) * SCREEN.stride) + x;
+		for (uint32_t col = 0; col < w; col++) {
+			p[col] = colour;
+		}
+	}
+}
+
+static void
+fb_clear(void)
+{
+	if (SCREEN.base == 0) {
+		return;
+	}
+	fb_fill(0, 0, SCREEN.width, SCREEN.height, 0x00000000);
+	fb_x = fb_y = 0;
+}
+
+static void
+fb_scroll(void)
+{
+	uint8_t *base = (uint8_t *)(unsigned long long)SCREEN.base;
+	unsigned long long src = (unsigned long long)FB_CELL * SCREEN.stride;
+	unsigned long long len = (unsigned long long)(SCREEN.height - FB_CELL) * SCREEN.stride;
+
+	for (unsigned long long i = 0; i < len; i++) {        /* forward copy: destination is below the source */
+		base[i] = base[i + src];
+	}
+	fb_fill(0, SCREEN.height - FB_CELL, SCREEN.width, FB_CELL, 0x00000000);
+	fb_y = SCREEN.height - FB_CELL;
+}
+
+static void
+fb_putc(char c)
+{
+	if (SCREEN.base == 0) {
+		return;
+	}
+	if (c == '\n') {
+		fb_x = 0;
+		fb_y += FB_CELL;
+	} else if (c == '\r') {
+		fb_x = 0;
+	} else if (c >= 32 && c < 127) {
+		const unsigned char *g = font8x8[(int)c - 32];
+
+		for (uint32_t row = 0; row < 8; row++) {
+			for (uint32_t col = 0; col < 8; col++) {
+				uint32_t on = (g[row] >> col) & 1;
+
+				fb_fill(fb_x + col * 2, fb_y + row * 2, 2, 2, on ? 0xFFFFFFFFu : 0x00000000u);
+			}
+		}
+		fb_x += FB_CELL;
+		if (fb_x + FB_CELL > SCREEN.width) {
+			fb_x = 0;
+			fb_y += FB_CELL;
+		}
+	}
+	if (fb_y + FB_CELL > SCREEN.height) {
+		fb_scroll();
+	}
+}
+
 static uint64_t win_base, win_size; /* XNU's physical memory window, claimed once */
 static uint64_t resident_rd_size;   /* root image kept at win_base + RESIDENT_RD_OFFSET, 0 if none */
 static char last_result[64] = "idle";
@@ -2762,6 +3227,76 @@ print_memory_map(void)
 			print("  total of type %d: %d MB\n", (uint64_t)t, totals[t] >> 20);
 		}
 	}
+}
+
+
+/* ------------------------------------------------------------------------ */
+/* STUB TEST: does a jump into a page of our own, through the same handoff    */
+/* the kernel gets (MMU off, caches off), reach the screen at all? It answers */
+/* the one question the kernel cannot: whether the jump works.                */
+/* ------------------------------------------------------------------------ */
+__attribute__((naked, noreturn)) static void
+stub_entry(void)
+{
+	__asm__ volatile (
+		"mov	w9, #0\n"
+		"movk	w9, #0xEA60, lsl #16\n"      /* w9 = 0xEA600000, the panel */
+		"mov	w10, #0xFF\n"
+		"movk	w10, #0x700, lsl #16\n"      /* 0x070000FF, green in any byte order */
+		"mov	x11, #0x40000\n"             /* 1 MiB of words */
+		"1:	str	w10, [x9], #4\n"
+		"subs	x11, x11, #1\n"
+		"b.ne	1b\n"
+		"2:	b	2b\n"
+		".globl stub_entry_end\n"
+		"stub_entry_end:\n"
+		);
+}
+
+extern const unsigned char stub_entry_end[];
+
+static uint64_t
+install_stub_page(void)
+{
+	uint64_t page = 0;
+	efi_status status = BS->allocate_pages(AllocateAnyPages, 1 /* EfiLoaderCode */, 1, &page);
+	if (EFI_ERROR(status)) {
+		print("STUB PAGE: allocate failed %x\n", status);
+		return 0;
+	}
+	uint64_t begin = (uint64_t)(uintptr_t)&stub_entry;
+	uint64_t end = (uint64_t)(uintptr_t)stub_entry_end;
+	if (end <= begin || end - begin > 0x1000) {
+		print("STUB PAGE: bad extent %x..%x\n", begin, end);
+		return 0;
+	}
+	memcpy((void *)(uintptr_t)page, (const void *)(uintptr_t)begin, (size_t)(end - begin));
+	flush_dcache(page, page + 0x1000);
+	__asm__ volatile ("ic iallu\ndsb sy\nisb" ::: "memory");
+	print("STUB PAGE: copied %x bytes to pa %x (mmu now maps it 1:1 or not)\n", end - begin, page);
+	return page;
+}
+
+static int
+cmd_word_char(char c)
+{
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+static int
+has_word(const char *hay, const char *needle)
+{
+	for (const char *h = hay; *h; h++) {
+		if (h != hay && cmd_word_char(h[-1])) {
+			continue;
+		}
+		const char *a = h, *b = needle;
+		while (*a && *b && *a == *b) { a++; b++; }
+		if (*b == 0 && !cmd_word_char(*a)) {
+			return 1;
+		}
+	}
+	return 0;
 }
 
 static int
@@ -3115,6 +3650,9 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		ba->video.v_rowBytes = SCREEN.stride;
 		ba->video.v_width = SCREEN.width;
 		ba->video.v_height = SCREEN.height;
+		/* PE_Video.v_scale is for progress graphics, not the ISO text console.
+		 * XNU accepts only 1x/2x here; verbose text remains 8x16 pixels per glyph.
+		 * Readability is handled by the bounded viewport and image cropping. */
 		ba->video.v_depth = 32;
 	}
 	/*
@@ -3470,7 +4008,29 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	if (kernel_mpidr != this_mpidr) {
 		print("the kernel will run on core %x (this is core %x)\n", kernel_mpidr, this_mpidr);
 	}
+	uint64_t entry_pa = entry_va + slide;
+	print("kernel entry words %x %x %x %x at pa %x\n",
+	    ((const uint32_t *)(uintptr_t)entry_pa)[0], ((const uint32_t *)(uintptr_t)entry_pa)[1],
+	    ((const uint32_t *)(uintptr_t)entry_pa)[2], ((const uint32_t *)(uintptr_t)entry_pa)[3], entry_pa);
+	uint64_t follow_pa = entry_pa + 0x2bb4;   /* __start's branch target: start_first_cpu */
+	print("kernel follow words %x %x %x %x at pa %x\n",
+	    ((const uint32_t *)(uintptr_t)follow_pa)[0], ((const uint32_t *)(uintptr_t)follow_pa)[1],
+	    ((const uint32_t *)(uintptr_t)follow_pa)[2], ((const uint32_t *)(uintptr_t)follow_pa)[3], follow_pa);
+	if (has_word(pi.cmdline, "entry_stub=1") || has_word(pi.cmdline, "entry_stub=2")) {
+		uint64_t stub_len = (uint64_t)(uintptr_t)stub_entry_end - (uint64_t)(uintptr_t)&stub_entry;
+		uint64_t target_pa = has_word(pi.cmdline, "entry_stub=2") ? follow_pa : entry_pa;
+		memcpy((void *)(uintptr_t)target_pa, (const void *)(uintptr_t)&stub_entry, (size_t)stub_len);
+		flush_dcache(target_pa, target_pa + 0x1000);
+		__asm__ volatile ("ic iallu\ndsb sy\nisb" ::: "memory");
+		print("KERNEL PA STUB: replaced %x entry bytes at %x; jump via %x\n", stub_len, target_pa, entry_pa);
+		BS->stall(5000000);
+		screen_quiet_before_run = screen_quiet;
+		screen_quiet = 1;
+		jump_to_kernel(entry_pa, ba_pa);
+	}
 	print("jumping to %x\n", entry_va + slide);
+	/* HOLD-BEFORE-JUMP: keep the whole log on the screen for a photograph before the kernel owns it. */
+	BS->stall(10000000);
 	flush_log();
 	screen_quiet_before_run = screen_quiet;
 	screen_quiet = 1;               /* the screen is the kernel's now; the log still takes every line */
@@ -3498,9 +4058,19 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 				}
 			}
 		}
-		uint64_t sp_now = (uint64_t)(uintptr_t)__builtin_frame_address(0);
-		clean_dcache(sp_now - 0x2000, sp_now + 0x2000);
+		/* The memory-map pass above already cleaned every loader/boot-services
+		 * range. A guessed window around SP crossed an unmapped boundary on mars
+		 * (stub17) and reset before the kernel branch. */
 		flush_dcache(phys_base, top);
+		if (has_word(pi.cmdline, "holdpre=1")) {
+			print("POSTFLUSH entry %x %x %x %x at %x\n",
+			    ((const uint32_t *)(uintptr_t)entry_pa)[0], ((const uint32_t *)(uintptr_t)entry_pa)[1],
+			    ((const uint32_t *)(uintptr_t)entry_pa)[2], ((const uint32_t *)(uintptr_t)entry_pa)[3], entry_pa);
+			print("POSTFLUSH follow %x %x %x %x at %x\n",
+			    ((const uint32_t *)(uintptr_t)follow_pa)[0], ((const uint32_t *)(uintptr_t)follow_pa)[1],
+			    ((const uint32_t *)(uintptr_t)follow_pa)[2], ((const uint32_t *)(uintptr_t)follow_pa)[3], follow_pa);
+			BS->stall(10000000);
+		}
 		if (checkpoint == CHECKPOINT_SELFTEST) {
 			/* Do not enter the kernel at all: exercise only the return path. */
 			jump_to_kernel((uint64_t)(uintptr_t)&loader_return_stub, 0);
@@ -4330,6 +4900,15 @@ efi_main(efi_handle image, efi_system_table *st)
 	BS = st->bs;
 	IMAGE = image;
 
+	/* PORT-FIRST: the panel console is set up before anything else can fail, so every line below is visible
+	 * even if the loader dies three instructions later. */
+	SCREEN.base = 0xEA600000ULL;
+	SCREEN.width = 1440;
+	SCREEN.height = 3200;
+	SCREEN.stride = 1440 * 4;
+	fb_clear();
+	print("== XNULOADER v3, panel console ==\n");
+
 	BS->set_watchdog_timer(0, 0, 0, NULL);
 	/* no payload in memory (nobody put one there): the volume this loader came from may have one, as a UEFI boot loader's does */
 	if (((const struct payload_header *)PAYLOAD_BASE)->magic != PAYLOAD_MAGIC) {
@@ -4350,24 +4929,171 @@ efi_main(efi_handle image, efi_system_table *st)
 	if (EFI_ERROR(BS->locate_protocol(&gop_guid, NULL, (void **)&GOP)) || GOP->mode == NULL ||
 	    GOP->mode->info == NULL || GOP->mode->fb_base == 0) {
 		GOP = NULL;                     /* no display (QEMU without -device ramfb) */
+		/* PORT: no GOP. This phone's panel buffer is its own "Display Reserved" region, the one the SEC's console
+		 * drew on and the one the screen actually scans out; draw there instead of not at all. */
+		SCREEN.base = 0xEA600000ULL;
+		SCREEN.width = 1440;
+		SCREEN.height = 3200;
+		SCREEN.stride = 1440 * 4;
+		PLAT = &platform_redwood;
 	} else {
 		SCREEN.base = GOP->mode->fb_base;
 		SCREEN.width = GOP->mode->info->width;
 		SCREEN.height = GOP->mode->info->height;
 		SCREEN.stride = GOP->mode->info->pixels_per_scanline * 4;
+		/* This phone's framebuffer is its own "Display Reserved" (0xEA600000); the reference phone's is 0xE1000000.
+		 * Either one means real hardware, and real hardware is not QEMU: the fw_cfg probe below would abort. */
 		if (SCREEN.base == 0xE1000000ULL || SCREEN.base == 0xEA600000ULL) {
 			PLAT = &platform_redwood;
 		} else {
 			ramfb_phone_screen();
 		}
+		fb_clear();
+		for (uint32_t i = 0; i < log_len; i++) { fb_putc(log_buf[i]); }
 		print("display %d x %d at %x\n", (uint64_t)SCREEN.width, (uint64_t)SCREEN.height, SCREEN.base);
 	}
 	print("platform %s\n", PLAT->name);
+	/* STALL-PLATFORM: hold this line for a photograph; remove once the port boots. */
+	BS->stall(1000000);   /* 1 s: just enough to read the banner */
+	/* FLUSH-EARLY: put the log on the logdump partition now, so a crash after this point still leaves evidence. */
+	flush_log();
 
+	print("step: exception hook\n");
+	BS->stall(6000000);
 	install_exception_hook();
-	wdt_arm();
-
+	print("step: watchdog (disarmed for now)\n");
+	/* wdt_arm();  PORT: a watchdog that fires makes 'it just rebooted' impossible to tell from a crash. */
 	int have_payload = parse_payload(&pi, 0);
+	print("step: payload=%d\n", (unsigned long long)have_payload);
+	if (have_payload && has_word(pi.cmdline, "stub=3")) {
+		print("STUB TEST 3: br to the stub, MMU on\n");
+		BS->stall(3000000);
+		__asm__ volatile ("mov x0, #0\n br %0" : : "r" ((uint64_t)(uintptr_t)&stub_entry));
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=2")) {
+		print("STUB TEST 2: calling the stub with the MMU still on\n");
+		BS->stall(3000000);
+		stub_entry();          /* never returns */
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=17")) {
+		print("STUB TEST 17: stack flush, then staged M/C/I and TLBI\n");
+		BS->stall(3000000);
+		uint64_t page = install_stub_page();
+		if (page != 0) {
+			BS->stall(3000000);
+			jump_test_flush_stack();
+			jump_test_mci_tlbi(page);
+		}
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=16")) {
+		print("STUB TEST 16: staged M/C/I then TLBI VMALLE1\n");
+		BS->stall(3000000);
+		uint64_t page = install_stub_page();
+		if (page != 0) { BS->stall(3000000); jump_test_mci_tlbi(page); }
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=13")) {
+		print("STUB TEST 13: physical page, shut down M then C then I\n");
+		BS->stall(3000000);
+		uint64_t page = install_stub_page();
+		if (page != 0) { BS->stall(3000000); jump_test_mci(page); }
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=14")) {
+		print("STUB TEST 14: physical page, shut down I then C then M\n");
+		BS->stall(3000000);
+		uint64_t page = install_stub_page();
+		if (page != 0) { BS->stall(3000000); jump_test_icm(page); }
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=15")) {
+		print("STUB TEST 15: physical page, shut down C then M then I\n");
+		BS->stall(3000000);
+		uint64_t page = install_stub_page();
+		if (page != 0) { BS->stall(3000000); jump_test_cmi(page); }
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=11")) {
+		print("STUB TEST 11: physical page, MMU and instruction cache off\n");
+		BS->stall(3000000);
+		uint64_t page = install_stub_page();
+		if (page != 0) {
+			BS->stall(3000000);
+			jump_test_mask(page, 0x1001);
+		}
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=12")) {
+		print("STUB TEST 12: physical page, data and instruction caches off\n");
+		BS->stall(3000000);
+		uint64_t page = install_stub_page();
+		if (page != 0) {
+			BS->stall(3000000);
+			jump_test_mask(page, 0x1004);
+		}
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=7")) {
+		print("STUB TEST 7: physical page, MMU on, data cache off only\n");
+		BS->stall(3000000);
+		uint64_t page = install_stub_page();
+		if (page != 0) {
+			BS->stall(3000000);
+			jump_test_mask(page, 0x4);
+		}
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=8")) {
+		print("STUB TEST 8: physical page, MMU on, instruction cache off only\n");
+		BS->stall(3000000);
+		uint64_t page = install_stub_page();
+		if (page != 0) {
+			BS->stall(3000000);
+			jump_test_mask(page, 0x1000);
+		}
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=9")) {
+		print("STUB TEST 9: physical page, MMU off only\n");
+		BS->stall(3000000);
+		uint64_t page = install_stub_page();
+		if (page != 0) {
+			BS->stall(3000000);
+			jump_test_mask(page, 0x1);
+		}
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=10")) {
+		print("STUB TEST 10: physical page, MMU and data cache off\n");
+		BS->stall(3000000);
+		uint64_t page = install_stub_page();
+		if (page != 0) {
+			BS->stall(3000000);
+			jump_test_mask(page, 0x5);
+		}
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=5")) {
+		print("STUB TEST 5: br to a freshly allocated physical page, MMU on\n");
+		BS->stall(3000000);
+		uint64_t page = install_stub_page();
+		if (page != 0) {
+			BS->stall(3000000);
+			__asm__ volatile ("mov x0, #0\nbr %0" : : "r" (page) : "x0", "memory");
+		}
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=6")) {
+		print("STUB TEST 6: jump to a fresh physical page with MMU/caches off\n");
+		BS->stall(3000000);
+		uint64_t page = install_stub_page();
+		if (page != 0) {
+			BS->stall(3000000);
+			jump_to_kernel(page, 0);
+		}
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=4")) {
+		print("STUB TEST 4: jump after cleaning the stub code page\n");
+		BS->stall(3000000);
+		flush_dcache((uint64_t)(uintptr_t)&stub_entry, (uint64_t)(uintptr_t)&stub_entry + 0x1000);
+		__asm__ volatile ("dsb sy" ::: "memory");
+		jump_to_kernel((uint64_t)(uintptr_t)&stub_entry, 0);
+	}
+	if (have_payload && has_word(pi.cmdline, "stub=1")) {
+		print("STUB TEST: jumping to a page of our own\n");
+		BS->stall(3000000);
+		jump_to_kernel((uint64_t)(uintptr_t)&stub_entry, 0);
+	}
+	BS->stall(6000000);
 	if (have_payload && pi.usb_mode && usb_start()) {
 		flush_log();
 		usb_command_loop();
@@ -4375,6 +5101,8 @@ efi_main(efi_handle image, efi_system_table *st)
 
 	/* One-shot mode: run the kernel that came with the image, then reset. */
 	if (have_payload) {
+		print("step: run_kernel\n");
+		BS->stall(6000000);
 		run_kernel(0, 0);
 	}
 	reboot();

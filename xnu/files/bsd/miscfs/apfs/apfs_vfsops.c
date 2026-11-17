@@ -999,11 +999,15 @@ apfs_mount_common(mount_t mp, vnode_t devvp, vfs_context_t ctx, uint32_t contain
 	uint64_t devblocks = 0, nx_size = 0;
 	int error;
 
-	if (VNOP_IOCTL(devvp, DKIOCGETBLOCKSIZE, (caddr_t)&devblock, 0, ctx) != 0 ||
+	int block_size_error = VNOP_IOCTL(devvp, DKIOCGETBLOCKSIZE, (caddr_t)&devblock, 0, ctx);
+	if (block_size_error != 0 ||
 	    devblock == 0 || (APFS_META_CHUNK % devblock) != 0) {
+		apfs_log("root device block size: ioctl %d, size %u\n", block_size_error, devblock);
 		return EINVAL;
 	}
-	(void)VNOP_IOCTL(devvp, DKIOCGETBLOCKCOUNT, (caddr_t)&devblocks, 0, ctx);
+	int block_count_error = VNOP_IOCTL(devvp, DKIOCGETBLOCKCOUNT, (caddr_t)&devblocks, 0, ctx);
+	apfs_log("root device: block size %u, count ioctl %d, count %llu\n", devblock,
+	    block_count_error, (unsigned long long)devblocks);
 
 	am = kalloc_type(struct apfs_mount, Z_WAITOK | Z_ZERO);
 	if (am == NULL) {
@@ -1041,6 +1045,8 @@ apfs_mount_common(mount_t mp, vnode_t devvp, vfs_context_t ctx, uint32_t contain
 			uint64_t bc;
 
 			error = apfs_dev_read(dc, 0, sb, APFS_META_CHUNK);
+			apfs_log("root device first 4 KB: error %d, magic %.4s\n", error,
+			    error == 0 ? (const char *)sb + 32 : "----");
 			if (error == 0 && memcmp(sb + 32, "NXSB", 4) != 0) {
 				error = EINVAL;         /* (no container here: as the root, the next filesystem's turn) */
 			}

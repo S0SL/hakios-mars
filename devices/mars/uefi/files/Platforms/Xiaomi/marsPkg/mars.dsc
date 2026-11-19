@@ -87,3 +87,4 @@
   # then a build that wants a component here takes the nearest SoC's rather than nothing.
   #
   venus/AcpiTables.inf
+  SiliciumPkg/Drivers/PcieShimDxe/PcieShimDxe.inf

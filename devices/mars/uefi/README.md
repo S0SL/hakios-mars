@@ -3,9 +3,10 @@
 HakiOS's UEFI is Project Silicium's Mu-Silicium with HakiOS's changes: `uefi/` at the top of the common tree, built from
 [hakios-uefi](https://github.com/oosexgang/hakios-uefi). This directory is this phone's part of it.
 
-**State: the platform is here; nothing has been built or run.** The files below were made from Mu-Silicium's `venusPkg` (Xiaomi
-Mi 11, the same SM8350) and from this phone's model number, and no vendor driver has been put in yet -- that is the step that
-makes an image.
+**State: the UEFI shim's stage 1 has been built and temporarily booted to the desktop on a Mi 11 Pro.** Its fresh runtime log
+confirms the PCIe power domain and GCC clocks reached the stage-1 completion point. Stage 2 (PARF/GPIO), PHY readiness, PCIe
+link training, and Wi-Fi remain unverified or not working. The firmware was started with temporary Fastboot boot; no partition
+was flashed. The files below began from Mu-Silicium's `venusPkg` (Xiaomi Mi 11, the same SM8350) and were adapted for this phone.
 
 ## What is here
 
@@ -15,8 +16,9 @@ makes an image.
 | `.../mars.fdf` | the same | what the image is made of |
 | `.../mars.dec` | the same | the package's declarations (empty, as `venus.dec` and `redwood.dec` are) |
 | `.../DeviceBuild.py` | the same | `stuart`/`build_uefi.py` entry point for `-d mars` |
-| `.../Include/APRIORI.inc`, `DXE.inc`, `RAW.inc` | the same | the driver lists, each `Binaries/mars/...` -- **the vendor drivers those lines name do not exist yet** |
-| `.../Library/MemoryMapLib/` | the same | the SM8350 ("lahaina") memory map: the DDR holes, `Display Reserved` at `0xE2A00000` (36 MB), the register windows |
+| `.../Include/APRIORI.inc`, `DXE.inc`, `RAW.inc` | the same | the driver lists, including the Mars PCIe shim and device-specific vendor modules |
+| `.../Library/MemoryMapLib/` | the same | the SM8350 ("lahaina") memory map, including the PCIe GCC, PARF/PHY, TLMM and DBI/ECAM windows |
+| `files/Silicon/Silicium/SiliciumPkg/Drivers/PcieShimDxe/` | Mu-Silicium | the stage-gated PCIe initialization driver; stage 1 is the verified default |
 | `.../Library/ConfigurationMapLib/` | the same | where the boot devices are (UFS) |
 | `files/Resources/Configs/mars.toml` | `Resources/Configs/` | the boot shim's layout: the FD at `0x9FD00000`, 2 MB; gzip |
 | `make-mars-pkg.py` | -- | the record of how the files above were made |
@@ -34,8 +36,8 @@ because it is the same SoC.
 
 ## What this phone's platform still needs
 
-1. **The vendor's drivers.** Mandatory: the image will not boot without the display, storage and USB drivers Qualcomm and
-   Xiaomi wrote for this phone. Extract them from **your own** `xbl` with [UEFIReader](https://github.com/WOA-Project/UEFIReader)
+1. **The vendor's drivers.** Reproducing the firmware build requires the display, storage and USB drivers Qualcomm and
+   Xiaomi wrote for this phone. They are not distributed here. Extract them from **your own** `xbl` with [UEFIReader](https://github.com/WOA-Project/UEFIReader)
    into `devices/mars/uefi/files/Binaries/mars/` (`QcomPkg`, `MiPkg`, `RawFiles`, the EDK2 modules as the vendor built them).
    `.gitignore` ignores `files/Binaries/*/*`, and `tools/provenance-check.py` fails if they come back: they are the vendor's.
 2. **The device tree** (optional to build, needed to boot what XNU is given): `files/Resources/DTBs/mars.dtb`, from your own

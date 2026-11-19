@@ -18,6 +18,7 @@
 | 运行日志 | ✅ **可用** — 每次运行全量日志，8GiB `darwin` 分区，一条 `dd` 提取 |
 | GPU 打磨 | ✅ **卡顿 −31%**（64.5→40ms/帧）：shader 预热 v2（编译尖峰 322ms→3ms）、大纹理采样 hash、`glTexSubImage2D` 复用、EGLImage 失败缓存 |
 | USB fastboot 通道 | ❌ **始终未打通** — `fastboot devices` 从未见到过设备，也从未能收发任何命令；根因是闭源 Qcom `UsbFnDwc` 的 `SetEPConfigCmd 0x80000009`（端点配置失败）——`GEVNTADR` 寄存器写不进（疑似 TrustZone 锁定 / Qcom wrapper 旁路），EP0 从未配置成功。loader 有 30 秒空闲自动起内核兜底（`fastboot boot` 后无需主机命令即可进桌面） |
+| UEFI PCIe shim | 🧪 **stage 1 已进桌面** — 新鲜运行日志确认电源域/GCC 时钟阶段完成；stage 2 PARF/GPIO 尚待实机日志，PHY/link/Wi-Fi 仍未打通 |
 | Wi-Fi / PCIe（QCA6490） | 🔧 **进行中** — `drivers/pci/hakios.pcie.c` 13 步 bring-up（`pcie_step=N`）；电源/时钟/GPIO/parf/PHY 序列全部通过；**卡在 PHY PLL 锁定** |
 
 ### 唯一卡点：PCIe PHY PLL
@@ -35,8 +36,8 @@ TLMM 基址 `0xf100000`）、完整的 `msm_pcie_enable` parf 序列
 - **WLAN_EN / CLKREQ / PERST**：都能正确翻转（`io 3`），PHY 仍卡住。
 
 **下一步（按可行性排序）：**
-1. **UEFI 侧 PCIe shim**（仿照 USB 的 `Dwc3ShimDxe`）——在内核运行前完成
-   PCIe 完整初始化，绕开时机问题。
+1. **分阶段验证 UEFI PCIe shim**——当前仅 stage 1（电源域/GCC 时钟）有实机桌面证据；
+   先确认 stage 2（PARF/GPIO），再验证 PHY 与 link。不可把 stage 1 结果当作 PCIe 已连通。
 2. PHY 序列时序（75 次写入中插入延时）。
 3. 确认 100MHz 参考时钟真的到达 PHY。
 
@@ -198,7 +199,7 @@ adb shell "dd if=/dev/zero of=/dev/block/by-name/darwin bs=4096 seek=2097152 cou
 ├── hakios-kernel                   # 已构建的内核（make kernel）
 ├── userland/                       # 用户态（REST=1 GL=1 ./build.sh）
 │   └── src/eagl.c                  # ★ CA/GL 垫片：shader 预热、hash、IOSurface
-├── Mu-Silicium/                    # UEFI（Dwc3ShimDxe USB shim 在这里）
+├── Mu-Silicium/                    # UEFI（Dwc3ShimDxe、PcieShimDxe）
 ├── tmp/                            # 参考：gcc-sm8350.c、dwc3-core.h、dipper 补丁
 └── venv/                           # 构建虚拟环境
 ```
@@ -270,7 +271,7 @@ hakios-mars/
 │
 ├── devices/mars/                 ← 小米 11 Pro 设备移植本体
 │   ├── configs/                  mars.config（内核配置模板）
-│   ├── uefi/files/               UEFI 平台文件（APRIORI.inc、DXE.inc、marsPkg）
+│   ├── uefi/files/               UEFI 平台文件（APRIORI.inc、DXE.inc、Mars PCIe shim、marsPkg）
 │   ├── uefi/dwc3shim/            DWC3 USB shim 说明（源码在 Mu-Silicium）
 │   └── device.conf, soc.args…    构建系统的设备描述
 │

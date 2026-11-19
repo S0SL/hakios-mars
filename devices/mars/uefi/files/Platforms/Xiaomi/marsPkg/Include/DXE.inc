@@ -81,6 +81,7 @@
   INF Binaries/mars/QcomPkg/Drivers/UsbPwrCtrlDxe/UsbPwrCtrlDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/TsensDxe/TsensDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/DDRInfoDxe/DDRInfoDxe.inf
+  INF SiliciumPkg/Drivers/PcieShimDxe/PcieShimDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.inf
   INF Binaries/mars/QcomPkg/Drivers/XhciPciEmulationDxe/XhciPciEmulationDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/XhciDxe/XhciDxe.inf

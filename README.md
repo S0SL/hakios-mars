@@ -17,7 +17,7 @@
 | Darwin 用户态 | ✅ **可用** — SpringBoard 桌面、触摸（FocalTech FTM5 `fts_dual`）、GPU 渲染（Mesa 25.0.7 / freedreno）、稳定 6GB 内存窗（`--physbase 100000000`） |
 | 运行日志 | ✅ **可用** — 每次运行全量日志，8GiB `darwin` 分区，一条 `dd` 提取 |
 | GPU 打磨 | ✅ **卡顿 −31%**（64.5→40ms/帧）：shader 预热 v2（编译尖峰 322ms→3ms）、大纹理采样 hash、`glTexSubImage2D` 复用、EGLImage 失败缓存 |
-| USB fastboot 通道 | ❌ **始终未打通** — 枚举偶尔闪现（`fastboot devices` 短暂出现过 `???????????? fastboot`）但从未能收发命令；根因是闭源 Qcom `UsbFnDwc` 的 `SetEPConfigCmd 0x80000009`（端点配置失败）——`GEVNTADR` 寄存器写不进（疑似 TrustZone 锁定 / Qcom wrapper 旁路），EP0 从未配置成功。loader 有 30 秒空闲自动起内核兜底（`fastboot boot` 后无需主机命令即可进桌面） |
+| USB fastboot 通道 | ❌ **始终未打通** — `fastboot devices` 从未见到过设备，也从未能收发任何命令；根因是闭源 Qcom `UsbFnDwc` 的 `SetEPConfigCmd 0x80000009`（端点配置失败）——`GEVNTADR` 寄存器写不进（疑似 TrustZone 锁定 / Qcom wrapper 旁路），EP0 从未配置成功。loader 有 30 秒空闲自动起内核兜底（`fastboot boot` 后无需主机命令即可进桌面） |
 | Wi-Fi / PCIe（QCA6490） | 🔧 **进行中** — `drivers/pci/hakios.pcie.c` 13 步 bring-up（`pcie_step=N`）；电源/时钟/GPIO/parf/PHY 序列全部通过；**卡在 PHY PLL 锁定** |
 
 ### 唯一卡点：PCIe PHY PLL

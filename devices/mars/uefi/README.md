@@ -3,16 +3,48 @@
 HakiOS's UEFI is Project Silicium's Mu-Silicium with HakiOS's changes: `uefi/` at the top of the common tree, built from
 [hakios-uefi](https://github.com/oosexgang/hakios-uefi). This directory is this phone's part of it.
 
-**State: the UEFI shim's stage 1 has been built and temporarily booted to the desktop on a Mi 11 Pro.** Its fresh runtime log
-confirms the PCIe power domain and GCC clocks reached the stage-1 completion point. Stage 2 (PARF/GPIO), PHY readiness, PCIe
-link training, and Wi-Fi remain unverified or not working. The firmware was started with temporary Fastboot boot; no partition
+**State: the corrected UEFI shim's stage 3 reached the desktop with the PHY ready on a Mi 11 Pro.** Its fresh runtime log
+confirms AUX/master clock halt bits clear and `PCS_STATUS1=0x86`, ready after 1 ms. PCIe
+link training and Wi-Fi remain unverified or not working. The firmware was started with temporary Fastboot boot; no partition
 was flashed. The files below began from Mu-Silicium's `venusPkg` (Xiaomi Mi 11, the same SM8350) and were adapted for this phone.
 
 On 20 November 2026, a local Ubuntu 22.04 WSL RELEASE rebuild also reached the iOS desktop, as confirmed on the phone.
 The test preserved the previously working kernel, loader and user-space payload and replaced the UEFI FD. It validates the
-local UEFI rebuild; the newly compiled minimal kernel and Darwin APFS images still need their own device tests.
+local UEFI rebuild with the older payload. The separate minimal-kernel test is described below.
 The fresh persistent log contains `local-uefi-r2`, the stage-1 completion marker, SpringBoard and Mesa/FD660 rendering.
 Its 2 MiB binary has SHA-256 `d611c89ef15062564f8ab3efbde81d5af011be9dc74d36a680ea2dc86f522d48`.
+
+The local minimal kernel subsequently reached the desktop with the existing user space (`local-min1`); the new APFS
+images remain untested. That kernel has UFS enabled and uses software rendering; GPU, Mars touch and Wi-Fi are not built in.
+
+## PCIe clock correction
+
+The earlier shim voted `0x35` at GCC `0x52008`, missing AUX and master AXI, and replaced other clients' votes.
+The SM8350 definitions agree in Xiaomi's
+[gcc-lahaina.c](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/blob/venus-r-oss/drivers/clk/qcom/gcc-lahaina.c)
+and upstream Linux's [gcc-sm8350.c](https://github.com/torvalds/linux/blob/master/drivers/clk/qcom/gcc-sm8350.c):
+
+| Clock | Vote bit at GCC `0x52008` | Branch status offset from GCC |
+|---|---|---|
+| slave AXI | 0 | `0x6b014` |
+| master AXI | 1 | `0x6b01c` |
+| configuration AHB | 2 | `0x6b024` |
+| AUX | 3 | `0x6b028` |
+| PIPE | 4 | `0x6b030` |
+| slave Q2A AXI | 5 | `0x6b010` |
+
+The corrected shim ORs `0x3f` into the existing vote and preserves the other bits of CLKREF (`0x8c004`) too.
+Its `clocks-v7` marker reports both vote words and all six correctly labeled branch registers. Earlier logs labeled
+Q2A as slave and PIPE as master; they did not establish that the actual master clock ran. A vote is a request,
+so interpret the branch status and PHY result separately from the vote readback.
+
+Run `python3 tools/mars/check-pcieshim.py` from the repository root on Linux. It compiles the actual driver against
+recorded MMIO and checks shared-bit preservation, the branch labels, all 16 stage/timeout combinations, bounded waits,
+and rejection of invalid stages. These checks pass with the correction and fail against the earlier clock code.
+The default stage remains 1. The isolated stage-3 device trial is recorded in `docs/mars-progress.md`: the user confirmed
+the desktop, and the fresh log shows vote `0x2000` becoming `0x203f`, AUX/master halt bits clearing, and PHY ready after 1 ms.
+The log's SHA-256 is `6317c0c7456392bd43f4da5057211afe8706e19f46b77c516cef5e4b03224066`.
+This trial stops before link training; it establishes PHY readiness, not a Wi-Fi connection.
 
 ## Required Mars boot configuration
 

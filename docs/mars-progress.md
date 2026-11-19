@@ -221,6 +221,80 @@ reset must not be assumed to deliver that notification. The newly built
 userland images, persistent data, stable loader USB and Mars hardware
 drivers remain separate follow-up work. Keep images and raw logs local.
 
+## 2026-11-20: correct PCIe clock votes; stage-3 PHY trial
+
+The existing shim and saved XNU PCIe probe had incorrect SM8350 clock
+definitions. Cross-checking Xiaomi `venus-r-oss`'s `gcc-lahaina.c` and
+upstream Linux `gcc-sm8350.c` confirms that GCC `0x52008` bits 0 through 5
+are slave AXI, master AXI, configuration AHB, AUX, PIPE and slave Q2A AXI.
+The old `0x35` vote omitted master AXI (bit 1) and AUX (bit 3), and replaced
+the whole shared vote word. It also labeled Q2A status `0x6b010` as slave
+and PIPE status `0x6b030` as master. The actual slave/master status offsets
+are `0x6b014`/`0x6b01c`. Earlier statements that all clocks worked were
+therefore too strong; AUX was explicitly still halted in the old logs.
+
+The corrected UEFI shim ORs `0x3f` into the existing vote, preserves other
+CLKREF bits, and reports the vote before/after plus all six correctly
+labeled branch registers under the `clocks-v7` marker. The source default
+remains stage 1; a build-local stage-3 override returns after the PHY check,
+before PERST release, link training or ELBI/ECAM reads. No saved XNU probe
+was enabled in the minimal kernel, so it cannot overwrite these votes.
+
+Read this phone's current PCIe device-tree properties through Android:
+all 75 PHY writes (including delay values) match the shim; status offset is
+`0x214`, status bit is 6, power-down offset is `0x240`. Android enumerates
+the endpoint as `17cb:1103`. These reads validate the hardware description,
+not an iOS Wi-Fi connection. The available `drivers/wifi/` is still the
+reference WCN6750 DSP driver, rather than a working Mars PCIe transport.
+Do not enable it unchanged merely because the PCIe PHY becomes ready.
+
+`tools/mars/check-pcieshim.py` compiles the actual C source with recorded
+MMIO. It reproduced a failure with the old clock code and passes with the
+fix: preservation of other clients' bits, complete clock votes, branch
+labels, all 16 stage/timeout combinations, bounded waits and two invalid
+stage compile checks. The isolated local RELEASE UEFI build passed with
+the verified UFS listener stubs. Default stage-1 source and DSC output
+settings were restored after the trial build.
+
+Trial artifacts: `diagnostics/wifi-clocks-v7-s3-20261120/`.
+Image `mars-wifi-clocks-v7-s3.img`: 11,780,096 bytes, SHA-256
+`5a3d42cb73b2529cfff656ad9038338bf1285498de03c2870b3a6c9e990aa35a`.
+UEFI FD SHA-256:
+`e89b89e3a1b40fc0c8f2df03d08a78b00a8f4cbe50632ae814fd7c31ad9da9b4`.
+Version suffix: `local-min1-wifi-clocks-v7-s3`. This image changes only
+the FD and version from the verified local-min1 baseline. An independent
+reader verified the Android v1 boot ID and preservation of BootShim, DTB,
+Android ramdisk and every other XNUP entry, including kernel and loader.
+Normal Fastboot accepted the temporary boot at 06:26:36 (Asia/Shanghai).
+The user confirmed the desktop and returned to Android. The pre-test 2 MiB log has SHA-256
+`d314d109d4e988f11d8fbe326d967e1fba52b76b96f2ee92b58806f31d459233`.
+The fresh `persist-v7.bin` has SHA-256
+`6317c0c7456392bd43f4da5057211afe8706e19f46b77c516cef5e4b03224066`.
+It contains the unique version, `clocks-v7`, stage 3 and:
+
+```text
+GCC halt pre  aux=80000220 cfg=0 mstr=80000220 slv=220 q2a=80000000 pipe=80000000
+clocks-v7 vote pre=2000 clkref=80000000 mask=3F
+clocks-v7 vote post=203F clkref=1
+GCC halt post aux=220 cfg=0 mstr=220 slv=220 q2a=0 pipe=0
+PCS_STATUS1=86 ready=1 after=1 ms
+stage3 PHY ready; returning
+```
+
+Both AUX and master AXI lost their halt bit, and the vote retained the
+pre-existing `0x2000`. PHY status bit 6 cleared: the previous PHY-not-ready
+blocker is resolved for this UEFI stage-3 path. Init again reports 46 checks
+with no failures, SpringBoard/window-server activity is present, and no
+kernel-panic signature was found in this capture. The phone is back in
+Android on slot b. No partition was flashed or slot changed.
+
+Wi-Fi is not connected yet. Stage 3 deliberately does not release PERST,
+train the link, configure outbound address translation, enumerate the
+endpoint or run a Wi-Fi transport. The next checkpoint is a bounded
+stage-4 link test with the correct status source and a guarded endpoint
+configuration window. The older PARF-LTSSM-control polling must be reviewed
+before treating it as a link-state report. The default source stage stays 1.
+
 ## Current status (one screen)
 
 | Track | State |
@@ -235,8 +309,8 @@ drivers remain separate follow-up work. Keep images and raw logs local.
 | Run logs | **Working** — full log at the 8 GiB offset in `darwin`; check image markers for freshness |
 | GPU polish | **-31% stutter** (64.5→40 ms/frame): shader warm-up v2, sampled hash, TexSubImage reuse, EGLImage fail cache |
 | USB fastboot channel | **Partial** — enumeration flaky behind Qcom `UsbfnDwc`; 30 s idle auto-run fallback in loader |
-| UEFI PCIe shim | **v6 stage 1 desktop verified; stage 2 pending** -- fresh log confirms GDSC on and power/clock-stage completion; PARF/GPIO stage built, independently checked and temporarily booted; awaiting screen/runtime evidence |
-| Wi-Fi / PCIe (QCA6490) | **In progress** — `drivers/pci/hakios.pcie.c` 13-step bring-up; GDSC/clocks/GPIO/parf/PHY-seq all pass; **PLL lock (`PCS_STATUS1=0x48`) is the blocker** |
+| UEFI PCIe shim | **Stage-3 PHY ready and desktop verified** — corrected clock votes retain `0x2000`; AUX/master halt bits clear; fresh log reports `PCS_STATUS1=0x86`, ready after 1 ms |
+| Wi-Fi / PCIe (QCA6490) | **PHY blocker resolved in UEFI** — next: guarded link training, address translation and endpoint enumeration; Mars PCIe Wi-Fi transport remains unimplemented |
 
 ## 2026-11-19 follow-up: bounded PCIe shim stages (v6)
 
@@ -651,6 +725,10 @@ stale. The shim still reads ECAM after LTSSM timeout: an unproven fault
 candidate to evaluate if the next test fails.
 
 ## PCIe blocker detail
+
+The 2026-11-20 clock audit above supersedes the earlier clock interpretation:
+the vote omitted AUX/master AXI, and two branch status labels were wrong.
+The following describes the older attempts, before that correction.
 
 Everything before the PHY PLL works (power, clocks, GPIO94/95/64, full parf
 sequence, 75-step PHY sequence, all register read/writes). The PHY never

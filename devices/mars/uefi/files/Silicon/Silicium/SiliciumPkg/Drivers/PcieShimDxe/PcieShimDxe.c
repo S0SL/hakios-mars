@@ -22,7 +22,16 @@
 #define TLMM_BASE         0x0f100000u
 #define GDSCR             0x0016b004u
 #define GCC_PCIE_CLKREF   (GCC_BASE + 0x8c004u)
-#define GCC_PCIE_CLK      (GCC_BASE + 0x52008u)
+#define GCC_PCIE_VOTE     (GCC_BASE + 0x52008u)
+/* SM8350 gcc-lahaina.c: shared vote bits, not the CBCR register order. */
+#define PCIE_SLV_AXI      (1u << 0)
+#define PCIE_MSTR_AXI     (1u << 1)
+#define PCIE_CFG_AHB      (1u << 2)
+#define PCIE_AUX          (1u << 3)
+#define PCIE_PIPE         (1u << 4)
+#define PCIE_SLV_Q2A      (1u << 5)
+#define PCIE_CLOCK_VOTES  (PCIE_SLV_AXI | PCIE_MSTR_AXI | PCIE_CFG_AHB | \
+                           PCIE_AUX | PCIE_PIPE | PCIE_SLV_Q2A)
 #define PARF_LTSSM        0x1b0u
 #define PHY_PCS_STATUS1   0x214u
 #define ELBI_SYS_CTRL     (DBI_BASE + 0xf24u)
@@ -95,6 +104,16 @@ wr (UINTN Address, UINT32 Value)
 }
 
 static VOID
+report_clocks (CONST CHAR8 *Phase)
+{
+  /* gcc-lahaina.c / gcc-sm8350.c branch status registers, relative to GCC. */
+  reportf ("pcieshim: GCC halt %a aux=%x cfg=%x mstr=%x slv=%x q2a=%x pipe=%x\n",
+      Phase, rd (GCC_BASE + 0x6b028), rd (GCC_BASE + 0x6b024),
+      rd (GCC_BASE + 0x6b01c), rd (GCC_BASE + 0x6b014),
+      rd (GCC_BASE + 0x6b010), rd (GCC_BASE + 0x6b030));
+}
+
+static VOID
 set_gpio (UINT32 Gpio)
 {
   UINTN Base = TLMM_BASE + (Gpio * 0x1000u);
@@ -138,15 +157,16 @@ PcieShimEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
   }
   reportf ("pcieshim: GDSCR ready value=%x\n", Value);
 
-  reportf ("pcieshim: GCC halt pre aux=%x cfg=%x slv=%x mstr=%x\n",
-      rd (GCC_BASE + 0x6b028), rd (GCC_BASE + 0x6b024),
-      rd (GCC_BASE + 0x6b010), rd (GCC_BASE + 0x6b030));
-  wr (GCC_PCIE_CLKREF, 1);
-  wr (GCC_PCIE_CLK, (1u << 0) | (1u << 2) | (1u << 4) | (1u << 5));
+  report_clocks ("pre");
+  reportf ("pcieshim: clocks-v7 vote pre=%x clkref=%x mask=%x\n",
+      rd (GCC_PCIE_VOTE), rd (GCC_PCIE_CLKREF), (UINT32)PCIE_CLOCK_VOTES);
+  /* These registers also hold other clients' votes. Never replace the word. */
+  wr (GCC_PCIE_CLKREF, rd (GCC_PCIE_CLKREF) | 1u);
+  wr (GCC_PCIE_VOTE, rd (GCC_PCIE_VOTE) | PCIE_CLOCK_VOTES);
   gBS->Stall (1000);
-  reportf ("pcieshim: GCC halt post aux=%x cfg=%x slv=%x mstr=%x\n",
-      rd (GCC_BASE + 0x6b028), rd (GCC_BASE + 0x6b024),
-      rd (GCC_BASE + 0x6b010), rd (GCC_BASE + 0x6b030));
+  reportf ("pcieshim: clocks-v7 vote post=%x clkref=%x\n",
+      rd (GCC_PCIE_VOTE), rd (GCC_PCIE_CLKREF));
+  report_clocks ("post");
   if (PCIE_SHIM_STAGE == 1) {
     reportf ("pcieshim: stage1 power/clocks complete; returning\n");
     return EFI_SUCCESS;

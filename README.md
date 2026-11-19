@@ -42,7 +42,145 @@ TLMM 基址 `0xf100000`）、完整的 `msm_pcie_enable` parf 序列
 
 ---
 
-## 构建与测试（在构建服务器上）
+## 从零复现（完整操作流程）
+
+### 0. 你需要什么
+
+| 项 | 说明 |
+|---|---|
+| 手机 | **小米 11 Pro（mars，SM8350，12GB）**——12GB 是硬要求（6GB 内存窗需要） |
+| 解锁 | Bootloader 解锁（`fastboot boot` 需要；不需要刷任何分区） |
+| 构建服务器 | Ubuntu（或 WSL），约 20GB 磁盘；本项目全在远程构建 |
+| 主机 PC | 有 `adb` / `fastboot`（platform-tools） |
+| 固件来源 | **你自己的**手机与 IPSW——本仓库不含任何 Apple 专有文件 |
+
+### 1. 手机分区：创建 24 GiB 的 `darwin` 分区
+
+项目用一个 **24 GiB 的 `darwin` 分区**承载系统与日志：
+
+| 区域 | 偏移 | 内容 |
+|---|---|---|
+| 前 2.47 GB | 0 | `system.apfs`（从 IPSW 提取） |
+| 8.37 GiB 起 | `UFS_WRITE_FIRST` | 内核可写区（`ufs_write=1`） |
+| 8 GiB 偏移 | `0x1F3000000` | **日志区**（`dd` 提取点，6291964 块） |
+
+分区表是 GPT（UFS LUN0，4 KiB 扇区）。操作需要 root 的 adb（或 fastboot）：
+
+```sh
+# 1) 先备份分区表（必须！破坏性操作）
+adb shell "dd if=/dev/block/sda of=/data/local/tmp/gpt-head.bin bs=512 count=34"
+adb shell "dd if=/dev/block/sda of=/data/local/tmp/gpt-tail.bin bs=512 skip=<last-33> count=33"
+adb pull /data/local/tmp/gpt-head.bin .
+adb pull /data/local/tmp/gpt-tail.bin .
+
+# 2) 用 sgdisk/sgdisk 在 UFS LUN0 上创建 24 GiB 的 darwin 分区
+#    （从 userdata 尾部划出；具体扇区号看你的分区表——sgdisk -p /dev/block/sda）
+adb shell
+sgdisk -e /dev/block/sda                    # 转换 MBR→GPT（已是 GPT 则跳过）
+sgdisk --new=0:0:+24G --change-name=0:darwin /dev/block/sda
+sgdisk --typecode=0:0FC63DAF-8483-4772-8E79-3D69D8477DE4 /dev/block/sda  # Linux filesystem GUID
+# 3) 确认并重读分区表
+sgdisk -p /dev/block/sda
+# 重启回安卓让内核识别，然后验证：
+adb shell "ls -la /dev/block/by-name/darwin"
+```
+
+**注意**：
+- `darwin` 分区名必须是 `darwin`（loader 和内核按名字找它）。
+- `logdump` 分区是安卓自己的，别动。
+- 任何写分区表的操作前**先备份 GPT**（上面第 1 步），出错可恢复。
+
+### 2. 提取固件（都从你自己的设备/IPSW）
+
+```sh
+# a) system.apfs（2.47 GB）：从 iPhone X 的 IPSW 解出
+#    （仓库不含它——sysimage/unpack.sh 会指引你下载并解包 IPSW）
+sysimage/unpack.sh ~/Downloads/iPhone10,3,iPhone10,6_16.5_20F66_Restore.ipsw
+# 产物在 sysimage/rootfs/、system.apfs 等（见 unpack.sh 头注释）
+
+# b) UEFI 闭源驱动（Binaries）：从手机的 UEFI 分区/厂商镜像提取
+#    放到 devices/mars/uefi/files/Binaries/（.gitignore 已排除，永不入库）
+
+# c) GPU / 触摸固件：手机 /vendor/firmware/ 的 a660_*.fw、st_fts_*.ftb 等
+#    放到 fw-gpu/、fw-touch/
+
+# d) Wi-Fi 固件（未打通，但需要准备）：wpss.mdt、wpss.b02-b07、amss.bin、
+#    m3.bin、bd_k1.elf、regdb_xiaomi.bin（手机 /vendor/firmware_mnt/image/）
+#    放到 fw-wifi/
+```
+
+### 3. 构建服务器搭建
+
+```sh
+# 1) 拉源码（本仓库）
+git clone https://github.com/S0SL/hakios-mars.git ~/hakios
+cd ~/hakios
+
+# 2) 依赖（XNU 构建链 + Mesa）
+xnu-deps/setup.sh          # XNU 构建工具链（clang/lld、Python 依赖）
+tools/mk-mesa.sh            # Mesa 25（freedreno，OSMesa）——需要 meson/ninja
+
+# 3) 内核配置
+cp devices/mars/configs/mars.config .config
+# 或 make defconfig 后手动改（CONFIG_HAKIOS_ADRENO=y、CONFIG_HAKIOS_PCIE=y）
+
+# 4) 解包 IPSW（见上一步）后，userland 依赖 sysimage/ 的产物
+```
+
+### 4. 构建
+
+```sh
+# 用户态（必须 REST=1 GL=1——见踩坑）
+cd ~/hakios/userland && REST=1 GL=1 ./build.sh
+
+# 内核
+cd ~/hakios && LC_ALL=C make kernel -j24
+
+# 打包（--physbase 是 6GB 内存窗的关键，12GB 机型专用）
+python3 xnuloader/mkpayload.py -o p.bin loader.efi=xnuloader/loader.efi \
+  kernel=hakios-kernel ramdisk=userland/root.apfs resident=userland/flashboot.apfs \
+  --physbase 100000000 \
+  --cmdline "-v cpus=8 bootcpu=7 ufs=2 ufs_write=1 root_apfs=ufs_darwin \
+    amfi_get_out_of_my_way=1 thermal_stop=95 battery_stop=20 \
+    touchscreen=1 touch_poll_us=2000 gpu=1"
+venv/bin/python mkxnuimg.py -d mars --mode DEBUG -p p.bin -o out.img
+```
+
+### 5. 启动测试
+
+```sh
+# 手机进 fastboot（关机后按 音量下+电源，或 adb reboot bootloader）
+adb reboot bootloader
+
+# 从内存启动（不写 boot 分区，重启即回安卓）
+fastboot boot out.img
+```
+
+**预期**：约 30 秒后 loader 自动起内核（或 `fastboot oem run`——USB 通道未打通，
+所以依赖 30 秒兜底），2-3 分钟到桌面。
+
+**首次启动慢**：Photos/Spotlight 在重建索引（根文件系统首次挂载）；之后的
+启动快得多。
+
+### 6. 提取运行日志（调试的生命线）
+
+```sh
+# 回到安卓后（长按电源重启）：
+adb shell dd if=/dev/block/by-name/darwin of=/data/local/tmp/k.bin \
+  bs=4096 skip=2097152 count=4096
+adb pull /data/local/tmp/k.bin .
+# k.bin 就是完整运行日志（loader + 内核 + 用户态）
+```
+
+**清日志区**（下次运行前，可选）——**写侧必须用 `seek=`**（`skip=` 只管输入；
+用错会清掉 system.apfs 头，已踩坑）：
+
+```sh
+adb shell "dd if=/dev/zero of=/dev/block/by-name/darwin bs=4096 seek=2097152 count=2048"
+# 清完验证 NXSB 未破坏：dd if=... bs=4096 count=1 | od -A d -t x1 -j 32 -N 4 → 4e 58 53 42
+```
+
+---
 
 全部工作在远程构建服务器上进行，基础目录是 `~/hakios/`：
 

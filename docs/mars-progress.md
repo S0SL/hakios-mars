@@ -26,14 +26,16 @@ clang/LLD, GCC/make, Python/venv, Git, Meson/Ninja, 7-Zip 25.01, lz4, and the
 Theos Linux toolchain with the iPhoneOS 16.5 SDK. `tools/doctor.sh` reports 9
 checks passing and no failures. The Mars XNU kernel and both Darwin APFS
 images have now been built from this GitHub snapshot; see the build records
-below. Remaining gaps include testing the new temporary boot image on-device
-and recovering modem firmware for modem-enabled runs.
+below. The minimal kernel has reached the desktop with a fresh matching log.
+Remaining gaps include testing the new APFS images on-device and recovering
+modem firmware for modem-enabled runs.
 The IPSW is available in the Windows workspace at
 `/mnt/c/Users/97770/Documents/mi11/iPhone10,3,iPhone10,6_16.5_20F66_Restore.ipsw`.
 The Mars XBL drivers and phone device tree are available in the local WSL
 build tree. The recovered RELEASE UEFI has now been tested on the phone with
 the prior working kernel and user-space payload. The freshly compiled minimal
-kernel and APFS images have not yet been boot-tested.
+kernel has now also been desktop-tested with that existing user space; the
+newly built APFS images remain untested on-device.
 
 ## 2026-11-19: first local Mars kernel build
 
@@ -44,8 +46,9 @@ kernel with SHA-256
 `fa36648db4422172ab63f0c89d6432fd4713290dacfd86afee7b03159f402078`.
 `tools/make-kernel.sh --judge xnu-build.log` passes: the kernel linked, and
 the only rejected targets are XNU's expected kext symbol-set checks for this
-non-Apple machine configuration. This is a compile result, not a phone boot
-test. The local `xnu-deps/setup.sh` also includes `dsymutil` in the Theos tool
+non-Apple machine configuration. This was initially a compile result; the
+2026-11-20 minimal-kernel test below now supplies phone boot evidence. The
+local `xnu-deps/setup.sh` also includes `dsymutil` in the Theos tool
 mapping, which the Linux build setup requires.
 
 ## 2026-11-20: local Darwin user-space build
@@ -69,9 +72,9 @@ versioned LLVM tools and configures Meson, libc++, pkg-config, and the iOS
 SDK's zlib for the local cross-build. The full userland build passed with
 `CHECK=1`; the exact log is
 `/home/hakios/hakios-github-snapshot/userland-build-20261120-r3.log`.
-Neither image has been boot-tested in this build session; the phone is not
-currently in Fastboot; the earlier successful desktop boot used a different
-image.
+Neither APFS image has been boot-tested in this build session. The successful
+UEFI and minimal-kernel desktop tests use the existing user-space payload and
+Darwin volume already on the phone.
 
 ## 2026-11-20: local Mars UEFI and temporary boot image
 
@@ -161,16 +164,74 @@ The local repacker, manifests and failed/successful firmware images are
 preserved under `diagnostics/`; keep them local because they contain vendor
 firmware and, for the full test image, user-supplied system content.
 
+## 2026-11-20: local minimal kernel desktop verified; data is volatile
+
+Normal bootloader Fastboot accepted the temporary boot at 06:03:48
+(Asia/Shanghai), after confirming `product: mars` and `is-userspace: no`.
+The user confirmed an iOS desktop, then returned to Android. No partition
+was flashed or slot changed. Android reports a completed boot and slot b.
+
+Image: `diagnostics/local-kernel-20261120-060226/mars-local-kernel-min1.img`,
+11,780,096 bytes, SHA-256
+`b37da64e9ccc28e80dc98cbe5d0bdd3f930d584f1c3b99a3e037b9ee844e7174`.
+Its kernel is the 14,962,080-byte local build recorded above (SHA-256
+`fa36648db4422172ab63f0c89d6432fd4713290dacfd86afee7b03159f402078`).
+Only the XNUP `kernel` and `kernel.ver` entries changed from the recovered r2
+baseline. Independent boot-ID and component checks confirmed preservation
+of the UEFI prefix, DTB, Android ramdisk, loader, payload ramdisks, command
+line and physical base. The new APFS build outputs were not used.
+
+After Android returned, read 2 MiB from `darwin` at offset 8 GiB into
+`diagnostics/local-kernel-20261120-060226/persist-min1.bin` and decoded the
+adjacent `.txt`. Binary SHA-256:
+`d314d109d4e988f11d8fbe326d967e1fba52b76b96f2ee92b58806f31d459233`.
+The pre-test log hash was
+`d611c89ef15062564f8ab3efbde81d5af011be9dc74d36a680ea2dc86f522d48`.
+The new log contains `local-min1` in both the version banner and command
+line, the local kernel build timestamp, stage-1 shim completion, display
+`1440 x 3200 at ea600000`, successful UFS/APFS root mounting, and
+`=== 46 checks, 0 failed ===`. It reports 6,144 MB RAM and seven kernel CPUs;
+`cpus=8` in the command line must not be described as eight CPUs online.
+SpringBoard and window-server activity corroborate the user's desktop
+report. No kernel-panic signature was found in the captured log.
+
+This is a minimal-kernel baseline: UFS is built in, while the hardware GPU,
+Mars touch and Wi-Fi drivers are not. The log explicitly says
+`no GPU to draw with: CoreAnimation keeps its software renderer`, followed
+by window-server software-renderer/context warnings. The preserved `gpu=1`
+and `touchscreen=1` flags cannot enable drivers absent from this kernel.
+This run does not reproduce the older kernel's GPU/touch milestones and
+does not provide a new PCIe PHY result. `dwc3shim: no variable` remains.
+
+The persistence question is resolved for this image: init logs
+`mount the Darwin volume read only` and
+`mount a memory filesystem on /private/var`. The save daemon logs
+`var_store: not asked to keep the data volume (var_store=1): nothing to watch`.
+The command line already has `ufs_write=1`, but lacks `var_store=1`; enabling
+block writes alone does not save application data. Settings, home-screen
+changes and application data under this memory filesystem are discarded
+on reboot. Diagnostic logs are saved separately to storage.
+
+Source contains optional `var_store=1` restore/save support, but it has not
+been enabled or validated on Mars in this run. Before calling persistence
+working, check its storage range against the existing Darwin layout, then
+verify a saved marker and actual application data across two boots. Its
+default watcher saves on a kernel shutdown notification; a forced power
+reset must not be assumed to deliver that notification. The newly built
+userland images, persistent data, stable loader USB and Mars hardware
+drivers remain separate follow-up work. Keep images and raw logs local.
+
 ## Current status (one screen)
 
 | Track | State |
 |---|---|
 | Local build environment | **Prepared** — Ubuntu 22.04 WSL on E:, Aliyun mirrors, Theos + iPhoneOS 16.5 SDK; `doctor.sh` has 0 failures |
-| Mars kernel | **Built locally** — arm64 Mach-O; build log judged successfully; not yet boot-tested on-device |
+| Mars kernel | **Local minimal build desktop verified** — fresh `local-min1` log, UFS/APFS root, 46 init checks with 0 failures, 6 GB RAM and 7 CPUs; software rendering |
 | Darwin images | **Built and checked locally** — `REST=1 GL=1 CHECK=1`; APFS checker and independent reader pass; not yet boot-tested from these outputs |
 | Local Mars UEFI | **Desktop verified on-device** — r2 restored the Mars map/dispatch prerequisites; old working payload retained; unique marker, SpringBoard and GPU rendering confirmed in a fresh log |
 | Source availability | **Recovery preserved** — WSL builds use the GitHub baseline plus recovered Mars map/driver lists from the saved server snapshot; other former-server work may still be unavailable |
-| Darwin user space | **Working** — desktop, touch (FTM5 fts_dual), GPU rendering (Mesa 25/freedreno), stable 6 GB window (`--physbase 100000000`) |
+| Darwin user space | **Existing volume desktop verified** — older kernel also demonstrated touch (FTM5 fts_dual) and Mesa/freedreno rendering; the new minimal kernel uses software rendering without those hardware drivers |
+| Data persistence | **Disabled in the tested image** — system root is read-only; `/private/var` is writable RAM; `var_store=1` is absent and the saver exits; changes are lost on reboot |
 | Run logs | **Working** — full log at the 8 GiB offset in `darwin`; check image markers for freshness |
 | GPU polish | **-31% stutter** (64.5→40 ms/frame): shader warm-up v2, sampled hash, TexSubImage reuse, EGLImage fail cache |
 | USB fastboot channel | **Partial** — enumeration flaky behind Qcom `UsbfnDwc`; 30 s idle auto-run fallback in loader |

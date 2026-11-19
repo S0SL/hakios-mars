@@ -122,13 +122,14 @@ recover_phone() {
 }
 
 # What the phone's bootloader starts the loader with: Project Silicium's UEFI (mkxnuimg.py) or HakiOS's U-Boot
-# (tools/mkubootimg.py, docs/u-boot.md). XL_FIRMWARE says which; without it, Silicium's when its image has been built
-# (it is made from the phone's own vendor drivers and is not in the repository), else U-Boot's.
+# (tools/mkubootimg.py, docs/u-boot.md). XL_FIRMWARE says which; without it, Silicium's when this device's image has been
+# built (it is made from the phone's own vendor drivers and is not in the repository), else U-Boot's.
 firmware() {
 	case "${XL_FIRMWARE:-}" in
 	u-boot|silicium) echo "$XL_FIRMWARE"; return ;;
 	esac
-	if [ -f Mu-Silicium/Build/redwoodPkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd ] || [ -f devices/redwood/prebuilt/SILICIUM_UEFI.fd ]; then
+	local device=${DEVICE:-redwood}
+	if [ -f "Mu-Silicium/Build/${device}Pkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd" ] || [ -f "devices/${device}/prebuilt/SILICIUM_UEFI.fd" ]; then
 		echo silicium
 	else
 		echo u-boot
@@ -145,10 +146,10 @@ enter() {
 		[ "$(state)" = absent ] && { echo "xl: phone not reachable"; return 1; }
 		enter; return ;;
 	esac
-	xnuloader/mkpayload.py -o usb-payload.bin loader.efi=$L --usb >/dev/null || { echo "xl: payload build failed"; return 1; }
+	python3 xnuloader/mkpayload.py -o usb-payload.bin loader.efi=$L --usb >/dev/null || { echo "xl: payload build failed"; return 1; }
 	case "$(firmware)" in
-	u-boot) tools/mkubootimg.py -d "${DEVICE:-redwood}" -l $L -p usb-payload.bin -o xnu-usb.img >/dev/null ;;
-	*) ./mkxnuimg.py -p usb-payload.bin -o xnu-usb.img >/dev/null ;;
+	u-boot) python3 tools/mkubootimg.py -d "${DEVICE:-redwood}" -l $L -p usb-payload.bin -o xnu-usb.img >/dev/null ;;
+	*) python3 mkxnuimg.py -d "${DEVICE:-redwood}" -p usb-payload.bin -o xnu-usb.img >/dev/null ;;
 	esac || { echo "xl: image build failed ($(firmware))"; return 1; }
 	# Right after the phone enters fastboot the first "boot" is sometimes not taken: try twice.
 	local try
@@ -212,7 +213,7 @@ run() { # run <oem command> <label>
 		case " $args " in
 		*" wifi="*|*" wifi_step="*) [ -s fw-wifi/mac ] && args="$args wifi_mac=$(tr -d ' \n\r' < fw-wifi/mac)" ;;
 		esac
-		xnuloader/mkpayload.py -o run-payload.bin kernel=$K ${rd:+ramdisk=$rd} --cmdline "loader_return_after=${XL_SECS:-8} epoch=$(date +%s) sb_delay=${XL_SB_DELAY:-8} $args" >/dev/null || return 1
+		python3 xnuloader/mkpayload.py -o run-payload.bin kernel=$K ${rd:+ramdisk=$rd} --cmdline "loader_return_after=${XL_SECS:-8} epoch=$(date +%s) sb_delay=${XL_SB_DELAY:-8} $args" >/dev/null || return 1
 		FB_TIMEOUT=30 fb stage run-payload.bin | grep -q OKAY || { echo "xl: upload failed"; return 1; }
 	fi
 	local live=; live_loader && live=1
@@ -270,7 +271,7 @@ recording() { # recording [file.mp4]
 	fb oem recording | grep -q OKAY || { echo "xl: the last run left no recording (boot-arg rec_secs=N)"; return 1; }
 	FB_TIMEOUT=120 fb get_staged logs/recording.raw >/dev/null
 	# (XL_REC_KEEP=1: the recording itself stays in logs/recording.raw, for tools/recording.py --frames)
-	tools/recording.py logs/recording.raw "$out" && { [ -n "$XL_REC_KEEP" ] || rm -f logs/recording.raw; }
+	python3 tools/recording.py logs/recording.raw "$out" && { [ -n "$XL_REC_KEEP" ] || rm -f logs/recording.raw; }
 }
 
 sound() { # sound [file.wav]
@@ -278,7 +279,7 @@ sound() { # sound [file.wav]
 	local out=${1:-logs/sound.wav}
 	fb oem sound | grep -q OKAY || { echo "xl: the last run left no sound recording (boot-arg rec_sound=N)"; return 1; }
 	FB_TIMEOUT=120 fb get_staged logs/sound.raw >/dev/null
-	tools/sound.py logs/sound.raw "$out" && rm -f logs/sound.raw
+	python3 tools/sound.py logs/sound.raw "$out" && rm -f logs/sound.raw
 }
 
 camera() { # camera [prefix]: the frames the last run's camera left (boot-arg cam=3 and up), as pictures
@@ -286,7 +287,7 @@ camera() { # camera [prefix]: the frames the last run's camera left (boot-arg ca
 	local out=${1:-logs/camera}
 	fb oem recording | grep -q OKAY || { echo "xl: the last run left no frames (boot-arg cam=3)"; return 1; }
 	FB_TIMEOUT=120 fb get_staged logs/camera.raw >/dev/null
-	tools/camraw.py logs/camera.raw "$out"
+	python3 tools/camraw.py logs/camera.raw "$out"
 }
 
 ramdisk() { # ramdisk [<file>|none]

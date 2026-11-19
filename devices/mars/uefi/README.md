@@ -20,7 +20,7 @@ was flashed. The files below began from Mu-Silicium's `venusPkg` (Xiaomi Mi 11, 
 | `.../Library/MemoryMapLib/` | the same | the SM8350 ("lahaina") memory map, including the PCIe GCC, PARF/PHY, TLMM and DBI/ECAM windows |
 | `files/Silicon/Silicium/SiliciumPkg/Drivers/PcieShimDxe/` | Mu-Silicium | the stage-gated PCIe initialization driver; stage 1 is the verified default |
 | `.../Library/ConfigurationMapLib/` | the same | where the boot devices are (UFS) |
-| `files/Resources/Configs/mars.toml` | `Resources/Configs/` | the boot shim's layout: the FD at `0x9FD00000`, 2 MB; gzip |
+| `files/Resources/Configs/mars.toml` | `Resources/Configs/` | the boot shim's layout: the FD at `0x9FC00000`, 3 MB, as listed in this phone's `uefiplat.cfg`; gzip |
 | `make-mars-pkg.py` | -- | the record of how the files above were made |
 
 ## How they were made, and how to make them again

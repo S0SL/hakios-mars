@@ -2,7 +2,6 @@ APRIORI DXE {
   INF MdeModulePkg/Core/Dxe/DxeMain.inf
   INF MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
 
-  INF Binaries/mars/QcomPkg/Drivers/EnvDxe/EnvDxe.inf
 
   INF MdeModulePkg/Universal/ReportStatusCodeRouter/RuntimeDxe/ReportStatusCodeRouterRuntimeDxe.inf
   INF MdeModulePkg/Universal/StatusCodeHandler/RuntimeDxe/StatusCodeHandlerRuntimeDxe.inf
@@ -25,25 +24,21 @@ APRIORI DXE {
   INF Binaries/mars/QcomPkg/Drivers/NpaDxe/NpaDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/RpmhDxe/RpmhDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/VcsDxe/VcsDxe.inf
-  INF Binaries/mars/QcomPkg/Drivers/ClockDxe/ClockDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/ICBDxe/ICBDxe.inf
-  INF Binaries/mars/QcomPkg/Drivers/ShmBridgeDxe/ShmBridgeDxeLA.inf
-  INF Binaries/mars/QcomPkg/Drivers/TzDxe/ScmDxeLA.inf
   INF Binaries/mars/QcomPkg/Drivers/TLMMDxe/TLMMDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/I2CDxe/I2CDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/SPMIDxe/SPMIDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/PmicDxe/PmicDxeLa.inf
 
+  INF Binaries/mars/QcomPkg/Drivers/UFSDxe/UFSDxe.inf
+
   INF MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   INF MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
   INF MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
 
-  INF Binaries/mars/QcomPkg/Drivers/SdccDxe/SdccDxe.inf
-  INF Binaries/mars/QcomPkg/Drivers/UFSDxe/UFSDxe.inf
 
   INF FatPkg/EnhancedFatDxe/Fat.inf
 
-  INF Binaries/mars/QcomPkg/Drivers/TzDxe/TzDxeLA.inf
 
   INF MdeModulePkg/Universal/Variable/RuntimeDxe/VariableRuntimeDxe.inf
 
@@ -54,14 +49,12 @@ APRIORI DXE {
   INF Binaries/mars/QcomPkg/Drivers/FeatureEnablerDxe/FeatureEnablerDxe.inf
 
 !if $(USE_CUSTOM_DISPLAY_DRIVER) == 1
-  INF Binaries/mars/QcomPkg/Drivers/DisplayDxe/DisplayDxe.inf
 !else
   INF SiliciumPkg/Drivers/SimpleFbDxe/SimpleFbDxe.inf
 !endif
 
   INF Binaries/mars/QcomPkg/Drivers/PILProxyDxe/PILProxyDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/PILDxe/PILDxe.inf
-  INF Binaries/mars/QcomPkg/Drivers/SPSSDxe/SPSSDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/IPCCDxe/IPCCDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/GLinkDxe/GLinkDxe.inf
 
@@ -94,7 +87,6 @@ APRIORI DXE {
   INF Binaries/mars/QcomPkg/Drivers/UsbConfigDxe/UsbConfigDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/ButtonsDxe/ButtonsDxe.inf
 !if $(USE_CUSTOM_DISPLAY_DRIVER) == 1
-  INF Binaries/mars/QcomPkg/Drivers/CPRDxe/CPRDxe.inf
 !endif
   INF Binaries/mars/QcomPkg/Drivers/GpiDxe/GpiDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/UCDxe/UCDxe.inf

@@ -1,7 +1,6 @@
   INF MdeModulePkg/Core/Dxe/DxeMain.inf
   INF MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
 
-  INF Binaries/mars/QcomPkg/Drivers/EnvDxe/EnvDxe.inf
 
   INF MdeModulePkg/Universal/ReportStatusCodeRouter/RuntimeDxe/ReportStatusCodeRouterRuntimeDxe.inf
   INF MdeModulePkg/Universal/StatusCodeHandler/RuntimeDxe/StatusCodeHandlerRuntimeDxe.inf
@@ -9,9 +8,6 @@
   INF MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
   INF MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
 
-  INF Binaries/mars/QcomPkg/Drivers/ShmBridgeDxe/ShmBridgeDxeLA.inf
-  INF Binaries/mars/QcomPkg/Drivers/TzDxe/ScmDxeLA.inf
-  INF Binaries/mars/QcomPkg/Drivers/TzDxe/TzDxeLA.inf
 
   INF MdeModulePkg/Universal/WatchdogTimerDxe/WatchdogTimer.inf
   INF MdeModulePkg/Universal/CapsuleRuntimeDxe/CapsuleRuntimeDxe.inf
@@ -32,19 +28,18 @@
   INF Binaries/mars/QcomPkg/Drivers/HWIODxe/HWIODxe.inf
 
   INF MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf
+  INF Binaries/mars/QcomPkg/Drivers/UFSDxe/UFSDxe.inf
   INF MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   INF MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
   INF FatPkg/EnhancedFatDxe/Fat.inf
   INF MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
 
-  INF Binaries/mars/QcomPkg/Drivers/UFSDxe/UFSDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/CmdDbDxe/CmdDbDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/PwrUtilsDxe/PwrUtilsDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/RpmhDxe/RpmhDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/NpaDxe/NpaDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/ULogDxe/ULogDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/VcsDxe/VcsDxe.inf
-  INF Binaries/mars/QcomPkg/Drivers/ClockDxe/ClockDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/ICBDxe/ICBDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/SmemDxe/SmemDxe.inf
   INF MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
@@ -55,19 +50,16 @@
   INF MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
 
 !if $(USE_CUSTOM_DISPLAY_DRIVER) == 1
-  INF Binaries/mars/QcomPkg/Drivers/CPRDxe/CPRDxe.inf
 !endif
   INF Binaries/mars/QcomPkg/Drivers/GpiDxe/GpiDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/I2CDxe/I2CDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/SPIDxe/SPIDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/SPMIDxe/SPMIDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/PmicDxe/PmicDxeLa.inf
-  INF Binaries/mars/QcomPkg/Drivers/SdccDxe/SdccDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/TLMMDxe/TLMMDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/FeatureEnablerDxe/FeatureEnablerDxe.inf
 
 !if $(USE_CUSTOM_DISPLAY_DRIVER) == 1
-  INF Binaries/mars/QcomPkg/Drivers/DisplayDxe/DisplayDxe.inf
 !else
   INF SiliciumPkg/Drivers/SimpleFbDxe/SimpleFbDxe.inf
 !endif
@@ -98,4 +90,3 @@
   INF Binaries/mars/QcomPkg/Drivers/RNGDxe/RngDxe.inf
   #INF Binaries/mars/QcomPkg/Drivers/PILDxe/PILDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/PILProxyDxe/PILProxyDxe.inf
-  INF Binaries/mars/QcomPkg/Drivers/SPSSDxe/SPSSDxe.inf

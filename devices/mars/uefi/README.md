@@ -8,6 +8,30 @@ confirms the PCIe power domain and GCC clocks reached the stage-1 completion poi
 link training, and Wi-Fi remain unverified or not working. The firmware was started with temporary Fastboot boot; no partition
 was flashed. The files below began from Mu-Silicium's `venusPkg` (Xiaomi Mi 11, the same SM8350) and were adapted for this phone.
 
+On 20 November 2026, a local Ubuntu 22.04 WSL RELEASE rebuild also reached the iOS desktop, as confirmed on the phone.
+The test preserved the previously working kernel, loader and user-space payload and replaced the UEFI FD. It validates the
+local UEFI rebuild; the newly compiled minimal kernel and Darwin APFS images still need their own device tests.
+The fresh persistent log contains `local-uefi-r2`, the stage-1 completion marker, SpringBoard and Mesa/FD660 rendering.
+Its 2 MiB binary has SHA-256 `d611c89ef15062564f8ab3efbde81d5af011be9dc74d36a680ea2dc86f522d48`.
+
+## Required Mars boot configuration
+
+The original Venus memory map and vendor driver lists cause an early reset on Mars. Keep these recovered settings:
+
+- The decompressed firmware volume has an 8 MiB region at `0x9F400000`; a 4 MiB region is too small for this build.
+- The UEFI FD is 3 MiB at `0x9FC00000`, with the CPU vectors at `0x9FF8C000` and the display at `0xEA600000`.
+- `0xA0000000` through `0xAFFFFFFF` is conventional memory for loading the EFI application. The 64 MiB XNUP payload
+  reservation at `0xF0000000` must be mapped before BDS accesses it.
+- `APRIORI.inc` and `DXE.inc` keep `EnvDxe`, `ClockDxe`, `SdccDxe`, `CPRDxe`, `ScmDxeLA`, `TzDxeLA`,
+  `ShmBridgeDxeLA`, and `SPSSDxe` out of the boot path. Restoring them requires separate bring-up work.
+- Keep `UFSDxe` in the firmware and its two verified listener stubs in the local vendor input. For the extracted Mars
+  version, offsets `0x10900` and `0xFD2C` contain `e0031faac0035fd6`; the patched PE has SHA-256
+  `c162bfd021e143fa438f38e4da1a1719e308a7bec1e707cbf264a673540a1969`. Other versions need independent verification.
+
+These settings were recovered together from the saved working Mars configuration. The successful test does not identify
+one individual missing setting as the sole cause. The former build's `Dwc3ShimDxe` source remains unavailable, so it is
+not registered here. A stable loader USB command channel is still pending.
+
 ## What is here
 
 | File | Where it goes in Mu-Silicium | What it is |
@@ -31,8 +55,8 @@ python3 devices/mars/uefi/make-mars-pkg.py      # fetches venusPkg, renames, cha
 
 Kept as the record and not as a build step. **Running it again overwrites every file it wrote**, so do not run it after
 editing the platform by hand. The three things it changes are the name (`venus` -> `mars`), the SMBIOS strings
-(`Mi 11` -> `Mi 11 Pro`, `M2011K2G` -> `M2102K1AC`, board `mars`) and the platform GUID; everything else is `venus`'s,
-because it is the same SoC.
+(`Mi 11` -> `Mi 11 Pro`, `M2011K2G` -> `M2102K1AC`, board `mars`) and the platform GUID. The memory map and driver lists
+were subsequently corrected for Mars; regenerating from Venus would discard those boot prerequisites.
 
 ## What this phone's platform still needs
 

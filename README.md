@@ -1,84 +1,81 @@
 # HakiOS on Xiaomi 11 Pro (mars)
 
-**Apple's open-source Darwin kernel (XNU) on the Xiaomi 11 Pro** (SM8350 /
-`mars`, 12 GB) — a device port of [HakiOS](https://github.com/oosexgang/hakios-xnu-kernel).
-A research bench, not a ROM: it boots from RAM via `fastboot boot`, and a
-reboot gives the phone back to Android.
+**在小米 11 Pro（mars，SM8350，12GB）上运行苹果开源的 Darwin 内核（XNU）**——
+[HakiOS](https://github.com/oosexgang/hakios-xnu-kernel) 的设备移植。
+研究台架而非 ROM：通过 `fastboot boot` 从内存启动，重启即可回到安卓。
 
-This tree is the upstream `hakios-xnu-kernel` common repository **plus** the
-`devices/mars/` port, the bring-up tools, and the notes below. It runs a full
-Darwin user space on the device: the home screen with GPU-accelerated rendering
-(Mesa/freedreno on the Adreno 730), working touch, and a persistent run log.
+本仓库是上游 `hakios-xnu-kernel` 公共仓库 **加上** `devices/mars/` 移植、
+配套工具与下文笔记。设备上已运行完整 Darwin 用户态：GPU 加速渲染的主屏幕
+（Adreno 730 上的 Mesa/freedreno）、可用的触摸、持久化运行日志。
 
 ---
 
-## Where the project stands (read this first)
+## 项目现状（先读这里）
 
-| Track | State |
+| 方向 | 状态 |
 |---|---|
-| Darwin user space | ✅ **Working** — SpringBoard desktop, touch (FocalTech FTM5 `fts_dual`), GPU rendering (Mesa 25.0.7 / freedreno), stable 6 GB memory window (`--physbase 100000000`) |
-| Run logs | ✅ **Working** — full log every run, 8 GiB `darwin` partition, one `dd` to extract |
-| GPU polish | ✅ **−31% stutter** (64.5→40 ms/frame): shader warm-up v2 (compile spikes 322ms→3ms), sampled hash for large textures, `glTexSubImage2D` reuse, EGLImage-fail cache |
-| USB fastboot channel | 🔧 **Partial** — enumeration flaky behind the closed-source Qcom `UsbfnDwc`; loader has a 30 s idle auto-run fallback (`fastboot boot` → desktop without host commands) |
-| Wi-Fi / PCIe (QCA6490) | 🔧 **In progress** — `drivers/pci/hakios.pcie.c` 13-step bring-up (`pcie_step=N`); power/clocks/GPIO/parf/PHY-sequence all pass; **PHY PLL lock is the blocker** |
+| Darwin 用户态 | ✅ **可用** — SpringBoard 桌面、触摸（FocalTech FTM5 `fts_dual`）、GPU 渲染（Mesa 25.0.7 / freedreno）、稳定 6GB 内存窗（`--physbase 100000000`） |
+| 运行日志 | ✅ **可用** — 每次运行全量日志，8GiB `darwin` 分区，一条 `dd` 提取 |
+| GPU 打磨 | ✅ **卡顿 −31%**（64.5→40ms/帧）：shader 预热 v2（编译尖峰 322ms→3ms）、大纹理采样 hash、`glTexSubImage2D` 复用、EGLImage 失败缓存 |
+| USB fastboot 通道 | 🔧 **部分** — 枚举在闭源 Qcom `UsbFnDwc` 后面不稳定；loader 有 30 秒空闲自动起内核兜底（`fastboot boot` 后无需主机命令即可进桌面） |
+| Wi-Fi / PCIe（QCA6490） | 🔧 **进行中** — `drivers/pci/hakios.pcie.c` 13 步 bring-up（`pcie_step=N`）；电源/时钟/GPIO/parf/PHY 序列全部通过；**卡在 PHY PLL 锁定** |
 
-### The one blocker: PCIe PHY PLL
+### 唯一卡点：PCIe PHY PLL
 
-`PCS_STATUS1` (PHY +0x214) stuck at `0x48` — the QMP PHY never reports
-ready, so LTSSM never starts and the QCA6490 never enumerates. Everything
-before it works: GDSC power, all bus clocks, GPIO94/95/64 (PERST/CLKREQ/
-WLAN_EN, TLMM at `0xf100000`), the full `msm_pcie_enable` parf sequence
-(`DEVICE_TYPE=4`, `SYS_CTRL=0x365E`, DBI window), and the device tree's
-75-entry PHY sequence.
+`PCS_STATUS1`（PHY +0x214）停在 `0x48`——QMP PHY 永不报 ready，
+LTSSM 无法启动，QCA6490 无法枚举。它之前的全部环节都已打通：
+GDSC 电源、全部总线时钟、GPIO94/95/64（PERST/CLKREQ/WLAN_EN，
+TLMM 基址 `0xf100000`）、完整的 `msm_pcie_enable` parf 序列
+（`DEVICE_TYPE=4`、`SYS_CTRL=0x365E`、DBI 窗口）、设备树的 75 项 PHY 序列。
 
-Dead ends already ruled out:
-- **cmd_db at 0x80860000** traps when read at pcie_init timing (readable only
-  from the GPU driver's timing — `gfx.lvl` etc. work there).
-- **PMIC SPMI direct writes** — all regulators go through RPMh (TCS).
-- **WLAN_EN / CLKREQ / PERST** — all toggle correctly (`io 3`), PHY still stuck.
+已排除的死路：
+- **0x80860000 的 cmd_db**：在 pcie_init 时机读取即 trap 崩溃
+  （只有 GPU 驱动时机可读——`gfx.lvl` 等在那里工作）。
+- **PMIC SPMI 直写**：所有稳压器走 RPMh（TCS）。
+- **WLAN_EN / CLKREQ / PERST**：都能正确翻转（`io 3`），PHY 仍卡住。
 
-**Next steps, in order of promise:**
-1. **UEFI-side PCIe shim** (like `Dwc3ShimDxe` for USB) — full PCIe init
-   before the kernel runs, bypassing the timing problem entirely.
-2. PHY sequence timing (insert delays in the 75 writes).
-3. Confirm the 100 MHz reference clock really reaches the PHY.
+**下一步（按可行性排序）：**
+1. **UEFI 侧 PCIe shim**（仿照 USB 的 `Dwc3ShimDxe`）——在内核运行前完成
+   PCIe 完整初始化，绕开时机问题。
+2. PHY 序列时序（75 次写入中插入延时）。
+3. 确认 100MHz 参考时钟真的到达 PHY。
 
 ---
 
-## Build & test (on the build server)
+## 构建与测试（在构建服务器上）
 
-All work happens on a remote build server; the base directory is `~/hakios/`:
+全部工作在远程构建服务器上进行，基础目录是 `~/hakios/`：
 
 ```
 ~/hakios/
-├── xnuloader/loader.c              # loader: USB command loop, log pipeline,
-│                                    #   6 GB window patch, pcie_step boot-arg
-├── drivers/pci/hakios.pcie.c       # THE PCIe RC driver (13 steps, pcie_step=N)
-├── drivers/pci/phy_seq.inc         # 75-entry QMP PHY sequence from the DT
-├── drivers/gpu/hakios.adreno.c     # GPU bring-up (22 steps, adreno=N)
-├── drivers/wifi/                   # Wi-Fi stack (redwood WCN6750 base)
-├── drivers/input/hakios.input.c    # calls hakios_pcie_init()
-├── xnu/files/…                     # XNU overlay (cp to xnu-src/ after edits!)
-├── xnu-src/xnu-8796.121.2/         # XNU tree
-├── hakios-kernel                   # built kernel (make kernel)
-├── userland/                       # userland (REST=1 GL=1 ./build.sh)
-│   └── src/eagl.c                  # CA/GL shim: shader warm-up, hash, IOSurface
-├── Mu-Silicium/                    # UEFI (Dwc3ShimDxe USB shim lives here)
-├── tmp/                            # references: gcc-sm8350.c, dwc3-core.h, dipper patches
-└── venv/                           # build venv
+├── xnuloader/loader.c              # loader：USB 命令循环、日志管线、
+│                                    #   6GB 内存窗补丁、pcie_step 启动参数
+├── drivers/pci/hakios.pcie.c       # ★ PCIe RC 驱动（13 步，pcie_step=N）
+├── drivers/pci/phy_seq.inc         # 设备树的 75 项 QMP PHY 序列
+├── drivers/gpu/hakios.adreno.c     # GPU bring-up（22 步，adreno=N）
+├── drivers/wifi/                   # Wi-Fi 协议栈（redwood WCN6750 基础）
+├── drivers/input/hakios.input.c    # 调用 hakios_pcie_init()
+├── xnu/files/…                     # XNU 覆盖层（编辑后需手动 cp 到 xnu-src/！）
+├── xnu-src/xnu-8796.121.2/         # XNU 源码树
+├── hakios-kernel                   # 已构建的内核（make kernel）
+├── userland/                       # 用户态（REST=1 GL=1 ./build.sh）
+│   └── src/eagl.c                  # ★ CA/GL 垫片：shader 预热、hash、IOSurface
+├── Mu-Silicium/                    # UEFI（Dwc3ShimDxe USB shim 在这里）
+├── tmp/                            # 参考：gcc-sm8350.c、dwc3-core.h、dipper 补丁
+└── venv/                           # 构建虚拟环境
 ```
 
-Kernel config: `~/.config` (active) / `devices/mars/configs/mars.config`
-(template). Enable `CONFIG_HAKIOS_PCIE=y`.
+内核配置：`~/.config`（生效）/ `devices/mars/configs/mars.config`（模板）。
+启用 `CONFIG_HAKIOS_PCIE=y`。
 
 ```sh
-# userland (must use REST=1 — see pitfalls)
+# 用户态（必须带 REST=1——见踩坑）
 cd ~/hakios/userland && REST=1 GL=1 ./build.sh
 
-# kernel (after editing drivers/: rm the stale .o or make won't rebuild)
+# 内核（编辑 drivers/ 后：rm 掉旧 .o，否则 make 不会重编）
 cd ~/hakios && LC_ALL=C make kernel -j24
 
-# pack an image
+# 打包镜像
 python3 xnuloader/mkpayload.py -o p.bin loader.efi=xnuloader/loader.efi \
   kernel=hakios-kernel ramdisk=userland/root.apfs resident=userland/flashboot.apfs \
   --physbase 100000000 \
@@ -88,98 +85,95 @@ python3 xnuloader/mkpayload.py -o p.bin loader.efi=xnuloader/loader.efi \
 venv/bin/python mkxnuimg.py -d mars --mode DEBUG -p p.bin -o out.img
 ```
 
-On the device (never flash a partition — `fastboot boot` only):
+设备上（永远不要刷分区——只用 `fastboot boot`）：
 
 ```sh
 fastboot boot out.img
-# extract the full run log from Android afterwards:
+# 之后从安卓提取完整运行日志：
 adb shell dd if=/dev/block/by-name/darwin of=/data/local/tmp/k.bin \
   bs=4096 skip=2097152 count=4096
 ```
 
 ---
 
-## Pitfalls (do not rediscover)
+## 踩坑清单（不要重踩）
 
-- **`build.sh` must run with `REST=1 GL=1`.** Without `REST=1` only 36 of
-  418 launchd plists are generated and the **wallpaper goes black**.
-  Normal `root.apfs` ≈ 1525 blocks / 418 plists; 1462 blocks / 36 plists = broken.
-- **`xnu/files` and `drivers/` edits must be `cp`'d into `xnu-src/`** manually
-  (`apply.sh` runs only on first checkout). After editing a driver, `rm` its
-  `.o` or make will not rebuild it.
-- **`loader.c` is ~5000 lines: `-O1` fails** with `fixup value out of range`
-  (AArch64 ADR ±1 MB). Build with `-O0` (`build.sh` already does).
-- **TLMM GPIO**: base **`0xf100000`** (not `0xf000000`), cfg bit 9 = output
-  enable, io bit 1 = value (write **2** = high). Bare `out=1` writes are
-  silently dropped by the hypervisor's TLMM emulation.
-- **`cmd_db` at `0x80860000`** traps when read at pcie_init timing; readable
-  only from the GPU driver's timing (`gfx.lvl` etc. work there).
-- **GCC (`0x100000`) is not mapped in UEFI page tables** — a raw access faults
-  (`esr 0x96000006 far 0x10f010`); clock enable must go through the loader
-  (which can build page-table entries).
-- **`log_len = 0` clears diagnostics** — the auto-run path used to wipe the
-  shim/pre-start register reads from the log. Disabled: keep the full log.
+- **`build.sh` 必须带 `REST=1 GL=1`。** 不带 `REST=1` 只生成 418 个
+  launchd plist 中的 36 个，**壁纸会变黑**。
+  正常 `root.apfs` ≈ 1525 块 / 418 plist；1462 块 / 36 plist = 坏构建。
+- **`xnu/files` 和 `drivers/` 的编辑必须手动 `cp` 进 `xnu-src/`**
+  （`apply.sh` 只在首次检出时运行）。改完驱动要 `rm` 掉它的 `.o`，
+  否则 make 不会重编。
+- **`loader.c` 约 5000 行：`-O1` 编译失败**（`fixup value out of range`，
+  AArch64 ADR ±1MB）。用 `-O0` 构建（`build.sh` 已经是）。
+- **TLMM GPIO**：基址 **`0xf100000`**（不是 `0xf000000`），cfg 的 bit 9 =
+  输出使能，io 的 bit 1 = 值（写 **2** = 高电平）。裸写 `out=1` 会被
+  hypervisor 的 TLMM 模拟层静默丢弃。
+- **0x80860000 的 cmd_db**：在 pcie_init 时机读取即 trap 崩溃；
+  只有 GPU 驱动时机可读（`gfx.lvl` 等）。
+- **GCC（`0x100000`）在 UEFI 页表里没有映射**——裸读会挂
+  （`esr 0x96000006 far 0x10f010`）；时钟使能必须走 loader
+  （它能建页表项）。
+- **`log_len = 0` 会清掉诊断**——自动起内核路径曾清掉 shim/pre-start
+  的寄存器读数。已禁用：保留全量日志。
 
 ---
 
-## Repository layout
+## 仓库结构
 
-This tree is the upstream `hakios-xnu-kernel` (kernel port, common drivers,
-loader, user space, tools, docs) plus the mars port. What is where:
+本树是上游 `hakios-xnu-kernel`（内核移植、公共驱动、loader、用户态、
+工具、文档）加上 mars 移植。各处是什么：
 
 ```
 hakios-mars/
-├── README.md                     ← this file (the only porting document)
-├── Makefile                      ← upstream build entry (make kernel / make defconfig)
-├── VERSION, LICENSE*, NOTICE…    ← upstream metadata and licensing
+├── README.md                     ← 本文档（唯一的移植文档）
+├── Makefile                      ← 上游构建入口（make kernel / make defconfig）
+├── VERSION, LICENSE*, NOTICE…    ← 上游元数据与许可
 │
-├── devices/mars/                 ← THE Xiaomi 11 Pro device port
-│   ├── configs/                  mars.config (kernel config template)
-│   ├── uefi/files/               UEFI platform files (APRIORI.inc, DXE.inc, marsPkg)
-│   ├── uefi/dwc3shim/            notes for the DWC3 USB shim (source is in Mu-Silicium)
-│   └── device.conf, soc.args…    device description for the build system
+├── devices/mars/                 ← 小米 11 Pro 设备移植本体
+│   ├── configs/                  mars.config（内核配置模板）
+│   ├── uefi/files/               UEFI 平台文件（APRIORI.inc、DXE.inc、marsPkg）
+│   ├── uefi/dwc3shim/            DWC3 USB shim 说明（源码在 Mu-Silicium）
+│   └── device.conf, soc.args…    构建系统的设备描述
 │
-├── drivers/                      ← kernel drivers (common + mars-specific)
-│   ├── pci/hakios.pcie.c         ★ PCIe RC driver (QCA6490 bring-up, pcie_step=N)
-│   ├── pci/phy_seq.inc           QMP PHY 75-entry sequence (from the device tree)
-│   ├── pci/conf                  CONFIG_HAKIOS_PCIE registration
-│   ├── gpu/hakios.adreno.c       Adreno bring-up (adreno=N, 22 steps)
-│   ├── wifi/                     Wi-Fi stack (redwood base: wlfw, apple80211, sta)
-│   ├── input/hakios.input.c      input + calls hakios_pcie_init() / hakios_adreno_init()
-│   ├── core/hakios.stubs.c       stubs for drivers not built
-│   └── …                         battery, ufs, haptic, torch, camera, mic…
+├── drivers/                      ← 内核驱动（公共 + mars 专用）
+│   ├── pci/hakios.pcie.c         ★ PCIe RC 驱动（QCA6490 bring-up，pcie_step=N）
+│   ├── pci/phy_seq.inc           QMP PHY 75 项序列（来自设备树）
+│   ├── pci/conf                  CONFIG_HAKIOS_PCIE 注册
+│   ├── gpu/hakios.adreno.c       Adreno bring-up（adreno=N，22 步）
+│   ├── wifi/                     Wi-Fi 协议栈（redwood 基础：wlfw、apple80211、sta）
+│   ├── input/hakios.input.c      输入 + 调用 hakios_pcie_init() / hakios_adreno_init()
+│   ├── core/hakios.stubs.c       未构建驱动的空实现
+│   └── …                         电池、UFS、马达、闪光灯、相机、麦克风…
 │
-├── xnu/                          ← XNU overlay (files copied into xnu-src/ at build)
-│   ├── files/bsd/…               APFS, sysctl, kern_exit (hakios-exit tracing)
-│   └── files/osfmk/…             loader_return, gic, tunables
+├── xnu/                          ← XNU 覆盖层（构建时拷入 xnu-src/）
+│   ├── files/bsd/…               APFS、sysctl、kern_exit（hakios-exit 追踪）
+│   └── files/osfmk/…             loader_return、gic、tunables
 │
-├── xnuloader/                    ← the boot loader (XNUP payload)
-│   ├── loader.c                  ★ USB command loop, log pipeline, 6 GB window
-│   ├── mkpayload.py              builds the XNUP container
-│   └── build.sh                  loader.efi (clang -O0)
+├── xnuloader/                    ← 启动 loader（XNUP payload）
+│   ├── loader.c                  ★ USB 命令循环、日志管线、6GB 内存窗
+│   ├── mkpayload.py              构建 XNUP 容器
+│   └── build.sh                  loader.efi（clang -O0）
 │
-├── userland/                     ← Darwin user space build
-│   ├── src/eagl.c                ★ CA/GL shim (shader warm-up, IOSurface, hash)
-│   ├── src/hakios.*.c            injected hooks (SpringBoard, WiFi, GPU…)
-│   └── build.sh                  REST=1 GL=1 to build (see pitfalls)
+├── userland/                     ← Darwin 用户态构建
+│   ├── src/eagl.c                ★ CA/GL 垫片（shader 预热、IOSurface、hash）
+│   ├── src/hakios.*.c            注入的钩子（SpringBoard、WiFi、GPU…）
+│   └── build.sh                  REST=1 GL=1 构建（见踩坑）
 │
-├── tools/                        ← host-side tools (mkapfs, hakios-config, frames…)
-├── sysimage/                     ← unpack.sh: build root.apfs from your own IPSW
-├── fw-gpu/, fw-touch/            ← firmware dirs (extract from your own phone)
-├── qemu/                         ← QEMU test harness
-├── hakios-metal/                 ← Metal-on-Adreno (sister component)
-├── socs/, configs/, ci/          ← SoC fragments, CI, config machinery
-└── scripts/                      ← host helpers (remote.ps1.example, webdav_*.example)
+├── tools/                        ← 主机工具（mkapfs、hakios-config、frames…）
+├── sysimage/                     ← unpack.sh：从你自己的 IPSW 构建 root.apfs
+├── fw-gpu/, fw-touch/            ← 固件目录（从你自己的手机提取）
+├── qemu/                         ← QEMU 测试环境
+├── hakios-metal/                 ← Adreno 上的 Metal（姊妹组件）
+├── socs/, configs/, ci/          ← SoC 片段、CI、配置机制
+└── scripts/                      ← 主机辅助脚本（remote.ps1.example、webdav_*.example）
 ```
 
-Upstream documentation: [docs/](docs/index.md), the site
-[hackios-web.vercel.app](https://hackios-web.vercel.app), and the sister
-project [dipper-xnu](https://github.com/youzjuzi/dipper-xnu) (Mi 8 / SDM845).
+---
 
-## License
+## 许可
 
-XNU-derived files remain under the Apple Public Source License 2.0
-([LICENSE.APSL](LICENSE.APSL)); the project's own files follow [LICENSE](LICENSE).
-Third-party components are listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
-No Apple-proprietary firmware, images or software is included — extract those
-from your own device/IPSW.
+XNU 衍生文件仍受 Apple 公开源代码许可 2.0 约束
+（[LICENSE.APSL](LICENSE.APSL)）；项目自身文件遵循 [LICENSE](LICENSE)。
+第三方组件列在 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)。
+不包含任何 Apple 专有固件、镜像或软件——请从你自己的设备/IPSW 提取。

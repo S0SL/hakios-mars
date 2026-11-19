@@ -46,6 +46,11 @@ source "$ROOT/xnu-env.sh"
 B=$ROOT/xnu-deps/build/mesa
 SDK=$THEOS/sdks/iPhoneOS16.5.sdk
 CC=$ROOT/xnu-deps/host/bin/xnu-clang
+LLVM_AR=$(command -v llvm-ar || command -v llvm-ar-14)
+LLVM_RANLIB=$(command -v llvm-ranlib || command -v llvm-ranlib-14)
+LLVM_STRIP=$(command -v llvm-strip || command -v llvm-strip-14)
+PKG_CONFIG=$(command -v pkg-config)
+PKG_CONFIG_DIR=$B/pkgconfig-ios
 mkdir -p "$B/out"
 cd "$B"
 
@@ -69,22 +74,36 @@ cp -r "$ROOT/tools/mesa/hakios-drm" mesa-$VERSION/src/hakios-drm
 # reaches it. Copied rather than linked, because this tree is cross-built.
 rm -rf mesa-$VERSION/src/compiler/air
 cp -r "$ROOT/tools/mesa/air" mesa-$VERSION/src/compiler/air
-if [ ! -x venv/bin/python3 ]; then
-	python3 -m venv venv
-	venv/bin/pip -q install mako pyyaml packaging
-fi
+if [ ! -x venv/bin/python3 ]; then python3 -m venv venv; fi
+venv/bin/pip -q install 'meson>=1.1' mako pyyaml packaging
 export PATH=$B/venv/bin:$PATH
+PYTHON_VERSION=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+export PYTHONPATH="$B/venv/lib/python$PYTHON_VERSION/site-packages${PYTHONPATH:+:$PYTHONPATH}"
+mkdir -p "$PKG_CONFIG_DIR"
+cat > "$PKG_CONFIG_DIR/zlib.pc" <<PC
+prefix=$SDK
+exec_prefix=\${prefix}
+libdir=\${prefix}/usr/lib
+includedir=\${prefix}/usr/include
+
+Name: zlib
+Description: zlib for the iPhoneOS SDK
+Version: 1.2.11
+Libs: -L\${libdir} -lz
+Cflags: -I\${includedir}
+PC
+export PKG_CONFIG_LIBDIR=$PKG_CONFIG_DIR
 
 # the compiler is the kernel's wrapper: it names the target (arm64-apple-ios) and the linker (ld64)
 cat > cross.ini <<INI
 [binaries]
 c = ['$CC', '-arch', 'arm64', '-isysroot', '$SDK']
-cpp = ['$CC++', '-arch', 'arm64', '-isysroot', '$SDK', '-fuse-cxa-atexit']
+cpp = ['$CC++', '-arch', 'arm64', '-isysroot', '$SDK', '-fuse-cxa-atexit', '-stdlib=libc++']
 objc = ['$CC', '-arch', 'arm64', '-isysroot', '$SDK']
-ar = 'llvm-ar'
-ranlib = 'llvm-ranlib'
-strip = 'llvm-strip'
-pkg-config = 'false'
+ar = '$LLVM_AR'
+ranlib = '$LLVM_RANLIB'
+strip = '$LLVM_STRIP'
+pkg-config = '$PKG_CONFIG'
 
 [host_machine]
 system = 'darwin'
@@ -98,7 +117,9 @@ needs_exe_wrapper = true
 INI
 DRIVERS=${DRIVERS:-softpipe,freedreno}
 BUILD=build-${DRIVERS//,/-}
-[ -f $BUILD/build.ninja ] || meson setup $BUILD mesa-$VERSION --cross-file cross.ini --wrap-mode=nofallback \
+MESON_RECONFIGURE=
+[ -f "$BUILD/build.ninja" ] && MESON_RECONFIGURE=--reconfigure
+meson setup $MESON_RECONFIGURE "$BUILD" mesa-$VERSION --cross-file cross.ini --wrap-mode=nofallback \
 	--prefix=/redwood --libdir=lib --buildtype=release -Db_ndebug=true \
 	-Dplatforms= -Dgallium-drivers="$DRIVERS" -Dfreedreno-kmds=msm -Dvulkan-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled \
 	-Dosmesa=true -Dllvm=disabled -Dshared-glapi=enabled -Dgles1=disabled -Dgles2=enabled -Dopengl=true \
@@ -115,7 +136,7 @@ if [ "${AIR:-}" = 1 ]; then
 	echo "mk-mesa.sh: $B/out/air_run ($(stat -c %s out/air_run) bytes)"
 fi
 
-llvm-strip -x -o out/libOSMesa.8.dylib $BUILD/src/gallium/targets/osmesa/libOSMesa.8.dylib
+"$LLVM_STRIP" -x -o out/libOSMesa.8.dylib $BUILD/src/gallium/targets/osmesa/libOSMesa.8.dylib
 install_name_tool -id /redwood/lib/libOSMesa.8.dylib out/libOSMesa.8.dylib
 nm -gU out/libOSMesa.8.dylib | awk '$3 ~ /^_gl/ { print substr($3, 2) }' > out/exported-gl.txt
 cp mesa-$VERSION/src/mapi/glapi/registry/gl.xml out/gl.xml

@@ -315,7 +315,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 			M=../xnu-deps/build/mesa/out
 			[ "$(cat $M/built-from 2>/dev/null)" = "$(cat ../tools/mesa/*.patch ../tools/mesa/hakios-drm/* | sha256sum)" ] ||
 				../tools/mk-mesa.sh
-			./mkeagl.py src/eagl_slots.txt $M/gl.xml $M/exported-gl.txt src/eagl.c > obj/eagl_gen.h
+			python3 ./mkeagl.py src/eagl_slots.txt $M/gl.xml $M/exported-gl.txt src/eagl.c > obj/eagl_gen.h
 			$DYN -dynamiclib -install_name /redwood/lib/libhakios.gl.dylib -Iobj -framework CoreFoundation \
 				-framework IOKit -framework IOSurface -lobjc $M/libOSMesa.8.dylib -o obj/libhakios.gl.dylib \
 				src/eagl.c src/gl_osmesa.c
@@ -465,7 +465,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	cp com.hakios.demo.plist com.hakios.wifi.plist root/LaunchDaemons/
 	VOLUME=""
 	[ -n "$FLASHBOOT" ] && [ -f $DARWIN/rootfs.slt ] && VOLUME="--root-volume $DARWIN/rootfs.slt"
-	[ -n "$DARWIN_JOBS" ] && OSLOG=${OSLOG-com.apple.backboardd} ./mkjobs.py ${REST:+--rest} $VOLUME $DARWIN/rootfs root/LaunchDaemons $DARWIN_JOBS
+	[ -n "$DARWIN_JOBS" ] && OSLOG=${OSLOG-com.apple.backboardd} python3 ./mkjobs.py ${REST:+--rest} $VOLUME $DARWIN/rootfs root/LaunchDaemons $DARWIN_JOBS
 fi
 # firmware of the phone's own hardware, where somebody has pulled it from the phone's Android into ../fw-gpu
 # (it is the vendor's and never in the repository): the kernel's GPU bring-up, drivers/gpu/hakios.adreno.c, finds it in fw/
@@ -502,7 +502,7 @@ for module in ../fw-camera/com.qti.sensormodule.hakios_*.bin; do
 	[ -f "$module" ] || continue
 	sensor=$(basename "$module" .bin | sed 's/^com\.qti\.sensormodule\.hakios_[a-z]*_\([a-z0-9]*\)_.*/\1/')
 	mkdir -p root/fw
-	../tools/camsensor.py "$module" "root/fw/camera-$sensor.tab" >/dev/null
+	python3 ../tools/camsensor.py "$module" "root/fw/camera-$sensor.tab" >/dev/null
 done
 # ... and their colour tuning (libhakios.media's processor, src/camera_isp.c), made by tools/camtuning.py out of the
 # cameras' tuning files beside them, com.qti.tuned.hakios_<maker>_<sensor>_<camera>.bin: camera-<sensor>.isp
@@ -510,7 +510,7 @@ for tuned in ../fw-camera/com.qti.tuned.hakios_*.bin; do
 	[ -f "$tuned" ] || continue
 	sensor=$(basename "$tuned" .bin | sed 's/^com\.qti\.tuned\.hakios_[a-z]*_\([a-z0-9]*\)_.*/\1/')
 	mkdir -p root/fw
-	../tools/camtuning.py "$tuned" "root/fw/camera-$sensor.isp" >/dev/null
+	python3 ../tools/camtuning.py "$tuned" "root/fw/camera-$sensor.isp" >/dev/null
 done
 # ... and with ADSP=1 the image of the audio DSP, from the same place into ../fw-audio (drivers/audio/hakios.adsp.c):
 # adsp.mdt and adsp.b02 to adsp.b36, 20 MB. Only when asked for: beside GL=1 the payload would be more than the 64 MB

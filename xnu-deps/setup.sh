@@ -63,7 +63,7 @@ update() {
 theos_mac() {
 	local tool
 	mkdir -p "$THEOS/toolchain/linux/iphone/bin" "$THEOS/sdks"
-	for tool in ld nm otool strip lipo libtool nmedit ctf_insert codesign_allocate install_name_tool; do
+	for tool in ld nm otool strip lipo libtool nmedit ctf_insert dsymutil codesign_allocate install_name_tool; do
 		link "$(/usr/bin/xcrun -f $tool)" "$THEOS/toolchain/linux/iphone/bin/$tool"
 	done
 	if [ ! -d "$THEOS/sdks-git/iPhoneOS16.5.sdk/usr/include" ]; then
@@ -173,7 +173,7 @@ stage1() {
 		cc -O2 -w -o host/bin/unzbm build/lzbitmap/unzbm.c build/lzbitmap/libzbitmap.c
 	fi
 	# the Mach-O linker and its companions come with theos
-	for tool in nm otool strip lipo libtool nmedit ctf_insert codesign_allocate install_name_tool; do
+	for tool in nm otool strip lipo libtool nmedit ctf_insert dsymutil codesign_allocate install_name_tool; do
 		link "$CCTOOLS/$tool" host/bin/$tool
 	done
 	if [ "$XNU_HOST_OS" = Darwin ]; then

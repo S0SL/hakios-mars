@@ -460,7 +460,10 @@ clear. The endpoint remains inaccessible. All 46 init checks passed; the
 user confirmed the desktop and returned to Android. The Android reference
 regulator values are separately recorded for the preceding TCXO test in
 `diagnostics/wifi-pipe-xo-v10-s5-20261120/android-regulators.txt`; they do
-not establish UEFI regulator state.
+not establish UEFI regulator state. After stage 11, Android read L5 enabled
+at 0.88 V, L6 disabled and the CX vote at level 256; the pre-test Android
+snapshot had L6 enabled. These changing Android states further prevent
+using a post-boot regulator reading as evidence of the UEFI vote state.
 
 ## Current status (one screen)
 

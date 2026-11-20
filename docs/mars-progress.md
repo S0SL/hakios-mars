@@ -393,6 +393,38 @@ CNSS supply votes to RPMh. Inspect the installed RPMh/NPA/VCS UEFI interfaces
 and initialization ordering before another RF-power test; do not use raw
 PMIC writes.
 
+### Stage 5 control with the TCXO PIPE parent
+
+Xiaomi's GCC table maps mux value `0` to the PCIe PHY PIPE output and `2` to
+`bi_tcxo`. The stage-5 control retained the initial value `2` and ran
+the same core and PHY resets, delayed PIPE vote and link probe as v9.
+The compile-time `PCIE_PIPE_PARENT` selector makes this comparison
+reproducible. The local RELEASE firmware comparison reports 94 FFS files
+with only PcieShimDxe changed. The independent image check verified the
+boot ID and preserved the loader, kernel, DTB, ramdisks and boot arguments.
+The shim check now covers both stage-5 parents (42 cases total).
+
+At 21:24 (Asia/Shanghai), normal Fastboot accepted the temporary boot of
+`diagnostics/wifi-pipe-xo-v10-s5-20261120/mars-wifi-pipe-xo-v10-s5.img`.
+Image SHA-256:
+`6071a520f5dc180bfc38bf1025f88a1b6c5c536be553a6e2edec659f4c06c038`.
+The user confirmed the desktop. The new `persist-after.bin` SHA-256 is
+`31ea6dabf1791139b1a875dfd82d0b4cfcb5294c44bd6f8c8fdcfe58921b756f`.
+It contains the `wifi-pipe-xo-v10-s5` version, mux readback `2 -> 2`,
+both reset pulses, PIPE vote `0x203f` and PHY status `0x86`. LTSSM
+reached `Detect.Active` again (`ELBI=0x1001` versus v9's `0x1`).
+DLL-active stayed clear and the shim skipped endpoint config access.
+All 46 init checks passed. Android completed on slot b after the test.
+The test used temporary boot and no flash command.
+
+The live DT also names separate PCIe root-controller supplies and a PHY
+rate-change clock. Android's read-only regulator capture showed PM8350 L5
+enabled at 0.88 V, PM8350 L6 enabled at 1.2 V, and the PM8350C S6 CX vote
+at level 256. These are Android readings. UEFI must still verify those
+supplies and the GCC PHY rate-change branch before attributing the missing
+PIPE output to the endpoint's WLAN supply rails. Check the branch and its
+source readback before adding a clock or regulator vote.
+
 ## Current status (one screen)
 
 | Track | State |
@@ -407,7 +439,7 @@ PMIC writes.
 | Run logs | **Working** — full log at the 8 GiB offset in `darwin`; check image markers for freshness |
 | GPU polish | **-31% stutter** (64.5→40 ms/frame): shader warm-up v2, sampled hash, TexSubImage reuse, EGLImage fail cache |
 | USB fastboot channel | **Partial** — enumeration flaky behind Qcom `UsbfnDwc`; 30 s idle auto-run fallback in loader |
-| UEFI PCIe shim | **Stage-5 desktop verified** — external PIPE parent selected; core/PHY resets pulsed; PIPE vote enabled; PHY ready; link still down |
+| UEFI PCIe shim | **Stage-5 PIPE parent comparison verified** — PHY ready with either parent, TCXO reaches Detect.Active, DLL remains inactive |
 | Wi-Fi / PCIe (QCA6490) | **Android hardware works; temporary Darwin link down** — Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`; stages 4–5 stop before DLL-active; UEFI RPMh supply voting remains unimplemented |
 
 ## 2026-11-19 follow-up: bounded PCIe shim stages (v6)

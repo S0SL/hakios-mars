@@ -14,6 +14,14 @@
 #error Invalid PCIe shim stage
 #endif
 
+#ifndef PCIE_PIPE_PARENT
+#define PCIE_PIPE_PARENT  0u
+#endif
+
+#if PCIE_PIPE_PARENT != 0u && PCIE_PIPE_PARENT != 2u
+#error Invalid PCIe PIPE parent
+#endif
+
 #define GCC_BASE          0x00100000u
 #define PARF_BASE         0x01c00000u
 #define PHY_BASE          0x01c06000u
@@ -125,9 +133,9 @@ static VOID
 select_pipe_parent (VOID)
 {
   UINT32 Before = rd (GCC_PCIE_PIPE_MUX);
-  UINT32 After = (Before & ~PCIE_PIPE_MUX_MASK) | 0u;
+  UINT32 After = (Before & ~PCIE_PIPE_MUX_MASK) | PCIE_PIPE_PARENT;
 
-  /* Xiaomi's pcie_pipe_clk_mux -> pcie_pipe_clk_ext_src selects parent 0. */
+  /* GCC Lahaina maps PCIe PIPE to 0 and bi_tcxo to 2. */
   wr (GCC_PCIE_PIPE_MUX, After);
   gBS->Stall (10);
   reportf ("pcieshim: pipe-v9 mux before=%x after=%x readback=%x\n",

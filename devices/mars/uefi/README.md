@@ -64,7 +64,12 @@ gaps in the prior shim. The RELEASE build and temporary desktop boot succeeded. 
 `da5c93c7389bcc312583387f3f901aac95212790fb775d50217a4f1e29cc7033`. It records mux `2 -> 0`, both reset pulses
 `0 -> 1 -> 0`, and the PIPE vote turning on after PHY programming. PHY reports ready, but link training ends at LTSSM 0
 with DLL-active clear; endpoint access is skipped. Android reported all five CNSS rails and the antenna-switch rail enabled
-in its reference boot. UEFI has not yet requested them through RPMh. Host MMIO checks pass; default remains stage 1.
+in its reference boot. UEFI has not yet requested them through RPMh. Default remains stage 1.
+
+The stage-5 TCXO comparison selects `PCIE_PIPE_PARENT=2` and keeps the reset and PIPE vote sequence. It
+reached the iOS desktop and read back mux `2 -> 2`. The link reached `Detect.Active` (`ELBI=0x1001`),
+with DLL inactive and endpoint access skipped. The host checks now cover both parents for stage 5
+(42 cases total). See `docs/mars-progress.md` for the image and log hashes.
 
 ## Required Mars boot configuration
 

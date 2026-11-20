@@ -164,7 +164,7 @@ static VOID MmioWrite32(UINTN address, UINT32 value)
   }
   if (address == 0x16b054) {
     assert(PCIE_SHIM_STAGE >= 5 && (value & ~3u) == (pipe_mux & ~3u));
-    assert((value & 3u) == 0);
+    assert((value & 3u) == PCIE_PIPE_PARENT);
     pipe_mux = value;
   }
   if (address == 0x16b000) {
@@ -179,7 +179,7 @@ static VOID MmioWrite32(UINTN address, UINT32 value)
   }
   if (address >= PHY_BASE && address < PARF_BASE + 0x8000) {
     if (PCIE_SHIM_STAGE >= 5) {
-      assert(pipe_mux == 0xa5000000);
+      assert(pipe_mux == (0xa5000000u | PCIE_PIPE_PARENT));
       assert(core_reset == 0xa5000010 && phy_reset == 0xa5000020);
     }
     phy_writes++;
@@ -220,7 +220,7 @@ int main(int argc, char **argv)
     assert(vote == 0xa500007f && clkref == 0x43);
     assert(strstr(mPcieShimLog, "aux=a1 cfg=a2 mstr=a3 slv=a4 q2a=a5 pipe=a6"));
     if (PCIE_SHIM_STAGE >= 5) {
-      assert(pipe_mux == 0xa5000000);
+      assert(pipe_mux == (0xa5000000u | PCIE_PIPE_PARENT));
       assert(core_asserts == 1 && core_deasserts == 1 && core_reset == 0xa5000010);
       assert(phy_asserts == 1 && phy_deasserts == 1 && phy_reset == 0xa5000020);
       assert(phy_writes == 75);
@@ -277,12 +277,14 @@ def check(source_path, output):
     if source.count(anchor) != 1:
         raise ValueError('Expected default stage 1')
     results = []
-    for stage in range(1, 6):
-        path = output / f'stage{stage}.c'
+    variants = [(stage, 0) for stage in range(1, 6)] + [(5, 2)]
+    for stage, parent in variants:
+        path = output / f'stage{stage}-parent{parent}.c'
         path.write_text(PRELUDE + source.replace(anchor,
                         f'#define PCIE_SHIM_STAGE    {stage}') + POSTLUDE)
         binary = path.with_suffix('')
         subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+                        f'-DPCIE_PIPE_PARENT={parent}u',
                         str(path), '-o', str(binary)], check=True)
         scenarios = ['power-timeout', 'phy-timeout', 'link-timeout', 'ok']
         if stage >= 4:
@@ -295,7 +297,7 @@ def check(source_path, output):
                 print(result.stderr, end='', flush=True)
                 result.check_returncode()
             print(result.stdout, end='', flush=True)
-            results.append({'stage': stage, 'scenario': scenario, 'passed': True})
+            results.append({'stage': stage, 'pipe_parent': parent, 'scenario': scenario, 'passed': True})
     for stage in (0, 6):
         path = output / f'invalid{stage}.c'
         path.write_text(PRELUDE + source.replace(anchor,
@@ -305,7 +307,7 @@ def check(source_path, output):
         assert result.returncode != 0 and 'Invalid PCIe shim stage' in result.stderr
         results.append({'stage': stage, 'invalid_stage_rejected': True})
     (output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
-    print('PASS: clock/reset sequencing, 32 staged MMIO cases, 2 invalid stages')
+    print('PASS: clock/reset sequencing, 42 staged MMIO cases including both PIPE parents, 2 invalid stages')
 
 
 def main():

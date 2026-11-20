@@ -3,9 +3,9 @@
 HakiOS's UEFI is Project Silicium's Mu-Silicium with HakiOS's changes: `uefi/` at the top of the common tree, built from
 [hakios-uefi](https://github.com/oosexgang/hakios-uefi). This directory is this phone's part of it.
 
-**State: the corrected UEFI shim's stage 3 reached the desktop with the PHY ready on a Mi 11 Pro.** Its fresh runtime log
-confirms AUX/master clock halt bits clear and `PCS_STATUS1=0x86`, ready after 1 ms. PCIe
-link training and Wi-Fi remain unverified or not working. The firmware was started with temporary Fastboot boot; no partition
+**State: the corrected UEFI shim's stage 4 reached the desktop with the PHY ready on a Mi 11 Pro.** Its fresh runtime log
+confirms AUX/master clock halt bits clear and `PCS_STATUS1=0x86`, ready after 1 ms. Link training stopped at LTSSM
+`Detect.Active`; the endpoint did not respond and config-space access was skipped. Wi-Fi remains unavailable. The firmware was started with temporary Fastboot boot; no partition
 was flashed. The files below began from Mu-Silicium's `venusPkg` (Xiaomi Mi 11, the same SM8350) and were adapted for this phone.
 
 On 20 November 2026, a local Ubuntu 22.04 WSL RELEASE rebuild also reached the iOS desktop, as confirmed on the phone.
@@ -40,11 +40,18 @@ so interpret the branch status and PHY result separately from the vote readback.
 
 Run `python3 tools/mars/check-pcieshim.py` from the repository root on Linux. It compiles the actual driver against
 recorded MMIO and checks shared-bit preservation, the branch labels, all 16 stage/timeout combinations, bounded waits,
-and rejection of invalid stages. These checks pass with the correction and fail against the earlier clock code.
+and rejection of invalid stages. The stage-4 follow-up adds six failure/access cases (22 total), including checking
+both link indicators and suppressing endpoint reads when the root, translation window or link is unavailable.
+These checks pass with the correction and fail against the earlier clock/link code.
 The default stage remains 1. The isolated stage-3 device trial is recorded in `docs/mars-progress.md`: the user confirmed
 the desktop, and the fresh log shows vote `0x2000` becoming `0x203f`, AUX/master halt bits clearing, and PHY ready after 1 ms.
 The log's SHA-256 is `6317c0c7456392bd43f4da5057211afe8706e19f46b77c516cef5e4b03224066`.
-This trial stops before link training; it establishes PHY readiness, not a Wi-Fi connection.
+This stage-3 trial stops before link training; it establishes PHY readiness, not a Wi-Fi connection.
+
+The subsequent stage-4 trial uses the local ELBI/DLL link indicators, restores the internal DBI base to zero,
+and sets up a bounded 4 KiB CFG0 iATU window before endpoint reads. The user confirmed a desktop; the fresh
+`persist-v8.bin` log has SHA-256 `6ebbcdf34a54f02be5c78e943cae2eef75c8f78d708a4eef672e0c765344aa12`.
+It records LTSSM `Detect.Active`, an inactive DLL and no ECAM access. The link is still down.
 
 ## Required Mars boot configuration
 

@@ -295,6 +295,49 @@ stage-4 link test with the correct status source and a guarded endpoint
 configuration window. The older PARF-LTSSM-control polling must be reviewed
 before treating it as a link-state report. The default source stage stays 1.
 
+### Stage 4: guarded link and endpoint trial (desktop verified)
+
+The live device tree confirms the six PCIe resources, including unrolled
+iATU at `0x60001000` and the configuration aperture at `0x60100000`.
+The stage-4 path now restores PARF's internal DBI base to zero, matching
+Xiaomi `pci-msm.c`, rather than using the CPU physical address there.
+It holds PERST low for 100 ms, releases it, enables training and polls
+both ELBI's XMLH link-up bit and the root port's DLL-active bit for up to
+100 ms. Only local controller registers are read during training.
+
+Once both indicators report up and the root ID is valid, it sets bus
+numbers and programs unrolled outbound iATU region 0 as CFG0: a 4 KiB
+host window at `0x60100000` targets `01:00.0` (`0x01000000`). It checks
+the region-enable bit with a bounded wait and rechecks the link before
+reading the endpoint's ID, command/status and class. No BARs are assigned
+and no DMA engine or radio firmware is started. Failure skips endpoint
+access; the stage-1 default is retained.
+
+The host harness passes 22 cases, adding root-config rejection, iATU
+enable timeout, link loss, disagreement between link indicators and an
+absent endpoint to the earlier stage/timeout checks. These are host
+checks. The isolated local RELEASE build passed and restored its default
+stage-1 source and DSC afterward. Image:
+`diagnostics/wifi-link-v8-s4-20261120/mars-wifi-link-v8-s4.img`, 11,782,144 bytes.
+SHA-256: `9f79936c8d5cfa424c01ef799573ac75370e00e88f53d788089b0748f2c5001f`.
+FD SHA-256: `dc314c2928c00a6132c4642a38a356dc88f4a9a2e96bf3d9dfbf2f1d3715c18f`.
+Unique version suffix: `local-min1-wifi-link-v8-s4`. Independent image
+checks confirm only the FD/version changed from the verified stage-3
+baseline; BootShim, DTB, Android ramdisk and every other XNUP entry are
+preserved. Normal Fastboot accepted the temporary boot at 06:41:14
+(Asia/Shanghai); the user confirmed the desktop and returned to Android.
+The fresh log `persist-v8.bin` has SHA-256
+`6ebbcdf34a54f02be5c78e943cae2eef75c8f78d708a4eef672e0c765344aa12`.
+It contains the unique stage-4 version and `clocks-v7` marker. PHY still
+reports `PCS_STATUS1=0x86`, ready after 1 ms. With DBI routed internally,
+the bounded 100 ms link poll ends at `ELBI=0x1001`, LTSSM `0x1`
+(`Detect.Active`), and `DLL=0x10110008` (DLL-active clear). The endpoint
+did not respond, so the stage correctly skipped iATU and ECAM accesses.
+SpringBoard started, init reports 46 checks with 0 failed, and no panic
+signature appears in the capture. Android completed on slot b. No
+partition was flashed or slot changed. The tested image does not connect
+Wi-Fi; link training is the current blocker.
+
 ## Current status (one screen)
 
 | Track | State |
@@ -309,8 +352,8 @@ before treating it as a link-state report. The default source stage stays 1.
 | Run logs | **Working** — full log at the 8 GiB offset in `darwin`; check image markers for freshness |
 | GPU polish | **-31% stutter** (64.5→40 ms/frame): shader warm-up v2, sampled hash, TexSubImage reuse, EGLImage fail cache |
 | USB fastboot channel | **Partial** — enumeration flaky behind Qcom `UsbfnDwc`; 30 s idle auto-run fallback in loader |
-| UEFI PCIe shim | **Stage-3 PHY ready and desktop verified** — corrected clock votes retain `0x2000`; AUX/master halt bits clear; fresh log reports `PCS_STATUS1=0x86`, ready after 1 ms |
-| Wi-Fi / PCIe (QCA6490) | **PHY blocker resolved in UEFI** — next: guarded link training, address translation and endpoint enumeration; Mars PCIe Wi-Fi transport remains unimplemented |
+| UEFI PCIe shim | **Stage-4 desktop verified** — corrected AUX/master clock votes and PHY ready; guarded link training stops at LTSSM `Detect.Active`, with no endpoint response |
+| Wi-Fi / PCIe (QCA6490) | **PCIe PHY ready, link down** — latest `ELBI=0x1001`, LTSSM `0x1`, DLL-active clear; endpoint/config-space access safely skipped; Wi-Fi unavailable |
 
 ## 2026-11-19 follow-up: bounded PCIe shim stages (v6)
 

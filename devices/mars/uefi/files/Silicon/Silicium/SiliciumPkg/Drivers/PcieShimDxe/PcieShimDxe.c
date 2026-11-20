@@ -36,6 +36,10 @@
 #define PHY_PCS_STATUS1   0x214u
 #define ELBI_SYS_CTRL     (DBI_BASE + 0xf24u)
 #define ELBI_SYS_STATUS   (DBI_BASE + 0xf28u)
+#define DBI_LINK_STATUS   (DBI_BASE + 0x80u)
+#define IATU_BASE         (DBI_BASE + 0x1000u)
+#define XMLH_LINK_UP      (1u << 10)
+#define DLL_LINK_ACTIVE   (1u << 29)
 #define GDSC_SW_COLLAPSE  (1u << 0)
 #define GDSC_STATUS       (1u << 31)
 #define LTSSM_L0          0x11u
@@ -122,12 +126,93 @@ set_gpio (UINT32 Gpio)
   wr (Base + 4, 2u);
 }
 
+static VOID
+set_perst (UINT32 Level)
+{
+  UINTN Base = TLMM_BASE + (94u * 0x1000u);
+
+  /* GPIO mode, output: set the latch before enabling the output. */
+  wr (Base + 4, Level ? 2u : 0u);
+  wr (Base, (rd (Base) & ~(0xfu << 2)) | (1u << 9));
+}
+
+static VOID
+probe_link (VOID)
+{
+  UINT32 Elbi = 0;
+  UINT32 Dll = 0;
+  UINT32 Id;
+  UINTN Tries;
+
+  /* pci-msm.c uses zero here: this is the internal DBI base, not its CPU PA. */
+  wr (PARF_BASE + 0x350, 0);
+  reportf ("pcieshim: link-v8 DBI route=%x; asserting PERST\n", rd (PARF_BASE + 0x350));
+  set_perst (0);
+  /* Allow endpoint power to settle before releasing reset. */
+  gBS->Stall (100000);
+  set_perst (1);
+  gBS->Stall (1000);
+  wr (PARF_BASE + PARF_LTSSM, rd (PARF_BASE + PARF_LTSSM) | (1u << 8));
+  for (Tries = 0; Tries < 100; Tries++) {
+    Elbi = rd (ELBI_SYS_STATUS);
+    Dll = rd (DBI_LINK_STATUS);
+    if ((Elbi & XMLH_LINK_UP) != 0 && (Dll & DLL_LINK_ACTIVE) != 0) {
+      break;
+    }
+    gBS->Stall (1000);
+  }
+  reportf ("pcieshim: link-v8 ELBI=%x LTSSM=%x DLL=%x after=%u ms\n",
+      Elbi, (Elbi >> 12) & 0x3fu, Dll, (UINT32)Tries);
+  if ((Elbi & XMLH_LINK_UP) == 0 || (Dll & DLL_LINK_ACTIVE) == 0) {
+    reportf ("pcieshim: link not ready; skipping iATU/ECAM\n");
+    return;
+  }
+  Id = rd (DBI_BASE);
+  reportf ("pcieshim: link ready; root id=%x\n", Id);
+  if (Id == 0 || Id == 0xffffffffu || (Id & 0xffffu) == 0xffffu) {
+    reportf ("pcieshim: root config invalid; skipping iATU/ECAM\n");
+    return;
+  }
+
+  /* Bus 0 -> bus 1. Only region 0, a 4 KiB CFG0 window for 01:00.0. */
+  wr (DBI_BASE + 0x18, (rd (DBI_BASE + 0x18) & 0xff000000u) | 0x00010100u);
+  wr (IATU_BASE + 0x04, 0);
+  wr (IATU_BASE + 0x00, 4);
+  wr (IATU_BASE + 0x08, ECAM_BASE);
+  wr (IATU_BASE + 0x0c, 0);
+  wr (IATU_BASE + 0x10, ECAM_BASE + 0xfffu);
+  wr (IATU_BASE + 0x14, 1u << 24);
+  wr (IATU_BASE + 0x18, 0);
+  wr (IATU_BASE + 0x04, 1u << 31);
+  for (Tries = 0; Tries < 100; Tries++) {
+    if ((rd (IATU_BASE + 0x04) & (1u << 31)) != 0) {
+      break;
+    }
+    gBS->Stall (10);
+  }
+  if (Tries == 100) {
+    reportf ("pcieshim: iATU did not enable; skipping ECAM\n");
+    return;
+  }
+  if ((rd (ELBI_SYS_STATUS) & XMLH_LINK_UP) == 0 ||
+      (rd (DBI_LINK_STATUS) & DLL_LINK_ACTIVE) == 0) {
+    reportf ("pcieshim: link lost; skipping ECAM\n");
+    return;
+  }
+  Id = rd (ECAM_BASE);
+  if (Id == 0 || Id == 0xffffffffu || (Id & 0xffffu) == 0xffffu) {
+    reportf ("pcieshim: endpoint absent id=%x; returning\n", Id);
+    return;
+  }
+  reportf ("pcieshim: endpoint vendor=%x device=%x cmdsts=%x class=%x\n",
+      Id & 0xffffu, Id >> 16, rd (ECAM_BASE + 4), rd (ECAM_BASE + 8));
+}
+
 EFI_STATUS EFIAPI
 PcieShimEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
 {
   UINT32 Value;
   UINT32 PhyStatus = 0;
-  UINT32 Ltssm = 0;
   UINTN Index;
   UINTN Tries;
 
@@ -215,29 +300,6 @@ PcieShimEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
     return EFI_SUCCESS;
   }
 
-  set_gpio (94);
-  gBS->Stall (1000);
-  wr (PARF_BASE + PARF_LTSSM, rd (PARF_BASE + PARF_LTSSM) | (1u << 8));
-  for (Tries = 0; Tries < 50; Tries++) {
-    Ltssm = rd (PARF_BASE + PARF_LTSSM) & 0x3f;
-    if (Ltssm == LTSSM_L0) {
-      break;
-    }
-    gBS->Stall (1000);
-  }
-  reportf ("pcieshim: PERST GPIO94 cfg=%x io=%x; LTSSM=%x after=%u ms\n",
-      rd (TLMM_BASE + 94 * 0x1000), rd (TLMM_BASE + 94 * 0x1000 + 4), Ltssm, (UINT32)Tries);
-  if (Ltssm != LTSSM_L0) {
-    reportf ("pcieshim: link not L0; skipping ELBI/ECAM\n");
-    return EFI_SUCCESS;
-  }
-  reportf ("pcieshim: link L0; probing ELBI/ECAM\n");
-  reportf ("pcieshim: ELBI ctrl=%x status=%x ECAM id=%x cmdsts=%x class=%x\n",
-      rd (ELBI_SYS_CTRL), rd (ELBI_SYS_STATUS), rd (ECAM_BASE),
-      rd (ECAM_BASE + 4), rd (ECAM_BASE + 8));
-  reportf ("pcieshim: PARF sys=%x pm=%x pmsts=%x phy=%x ltssm=%x type=%x dbi=%x\n",
-      rd (PARF_BASE), rd (PARF_BASE + 0x20), rd (PARF_BASE + 0x24),
-      rd (PARF_BASE + 0x40), rd (PARF_BASE + PARF_LTSSM),
-      rd (PARF_BASE + 0x1000), rd (PARF_BASE + 0x350));
+  probe_link ();
   return EFI_SUCCESS;
 }

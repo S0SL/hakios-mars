@@ -63,9 +63,12 @@ static UINTN AsciiVSPrint(CHAR8 *buffer, UINTN size,
 
 POSTLUDE = r'''
 static int power_ready, phy_ready, link_ready;
+static int root_valid, atu_ready, drop_link, dbi_routed;
+static int xmlh_only, dll_only, endpoint_absent;
 static unsigned touched, perst, window_reads, clock_writes, all_writes;
 static UINTN waited;
 static uint32_t vote = 0xa5000040, clkref = 0x42;
+static uint32_t atu[7];
 static VOID access_address(UINTN address)
 {
   if (address >= 0x100000 && address < 0x200000) {
@@ -84,10 +87,15 @@ static VOID access_address(UINTN address)
       assert(PCIE_SHIM_STAGE == 4 && phy_ready);
       perst++;
     }
-  } else if ((address >= DBI_BASE && address < DBI_BASE + 0x2000) ||
-             (address >= ECAM_BASE && address < ECAM_BASE + 0x100000)) {
-    assert(PCIE_SHIM_STAGE == 4 && power_ready && phy_ready && link_ready);
+  } else if (address >= DBI_BASE && address < DBI_BASE + 0x2000) {
+    assert(PCIE_SHIM_STAGE == 4 && power_ready && phy_ready && dbi_routed);
     touched |= 16;
+  } else if (address >= ECAM_BASE && address < ECAM_BASE + 0x100000) {
+    assert(PCIE_SHIM_STAGE == 4 && power_ready && phy_ready && link_ready);
+    assert(root_valid && atu_ready && !drop_link && atu[1] == 0x80000000);
+    assert(atu[0] == 4 && atu[2] == 0x60100000 && atu[3] == 0);
+    assert(atu[4] == 0x60100fff && atu[5] == 0x01000000 && atu[6] == 0);
+    touched |= 32;
     window_reads++;
   } else {
     fprintf(stderr, "Unexpected MMIO: %lx\n", (unsigned long)address);
@@ -100,6 +108,14 @@ static UINT32 MmioRead32(UINTN address)
   if (address == GDSCR) return power_ready ? GDSC_STATUS | 1 : 1;
   if (address == PHY_BASE + PHY_PCS_STATUS1) return phy_ready ? 0 : 0x48;
   if (address == PARF_BASE + PARF_LTSSM) return link_ready ? LTSSM_L0 : 0;
+  if (address == DBI_BASE + 0xf28)
+    return (link_ready || xmlh_only) && !(drop_link && atu[1]) ? (0x11 << 12) | 0x400 : 0;
+  if (address == DBI_BASE + 0x80)
+    return (link_ready || dll_only) && !(drop_link && atu[1]) ? 0x20010000 : 0;
+  if (address == DBI_BASE) return root_valid ? 0x010c17cb : 0xffffffff;
+  if (address == DBI_BASE + 0x1004) return atu_ready ? atu[1] : 0;
+  if (address == ECAM_BASE) return endpoint_absent ? 0xffffffff : 0x110317cb;
+  if (address == ECAM_BASE + 8) return 0x02800000;
   if (address == 0x152008) return vote;
   if (address == 0x18c004) return clkref;
   /* Distinct values catch mislabeled clock status addresses. */
@@ -115,6 +131,12 @@ static VOID MmioWrite32(UINTN address, UINT32 value)
 {
   access_address(address);
   all_writes++;
+  if (address == PARF_BASE + 0x350 && value == 0) dbi_routed = 1;
+  if (address >= DBI_BASE + 0x1000 && address <= DBI_BASE + 0x1018) {
+    assert(link_ready && root_valid);
+    if (address != DBI_BASE + 0x1004) assert(atu[1] == 0);
+    atu[(address - DBI_BASE - 0x1000) / 4] = value;
+  }
   if (address == 0x152008) {
     /* slv=0, mstr=1, cfg=2, aux=3, pipe=4, slv_q2a=5. */
     assert(value == (vote | 0x3f));
@@ -130,7 +152,7 @@ static VOID MmioWrite32(UINTN address, UINT32 value)
 static EFI_STATUS mock_stall(UINTN delay)
 {
   waited += delay;
-  assert(waited <= 100000);
+  assert(waited <= 250000);
   return EFI_SUCCESS;
 }
 static EFI_STATUS mock_variable(const wchar_t *name, EFI_GUID *guid,
@@ -146,6 +168,13 @@ int main(int argc, char **argv)
   power_ready = strcmp(argv[1], "power-timeout") != 0;
   phy_ready = strcmp(argv[1], "phy-timeout") != 0;
   link_ready = strcmp(argv[1], "link-timeout") != 0;
+  xmlh_only = strcmp(argv[1], "xmlh-only") == 0;
+  dll_only = strcmp(argv[1], "dll-only") == 0;
+  if (xmlh_only || dll_only) link_ready = 0;
+  endpoint_absent = strcmp(argv[1], "endpoint-absent") == 0;
+  root_valid = strcmp(argv[1], "root-invalid") != 0;
+  atu_ready = strcmp(argv[1], "atu-timeout") != 0;
+  drop_link = strcmp(argv[1], "link-lost") == 0;
   assert(PcieShimEntry(NULL, NULL) == EFI_SUCCESS);
   if (!power_ready) {
     assert(touched == 1 && all_writes == 1 && clock_writes == 0);
@@ -166,11 +195,24 @@ int main(int argc, char **argv)
       assert(touched == (1 | 2 | 4 | 8) && perst == 0);
       assert(strstr(mPcieShimLog, "stage3 PHY ready"));
     } else if (!link_ready) {
-      assert(touched == (1 | 2 | 4 | 8) && perst > 0 && window_reads == 0);
-      assert(strstr(mPcieShimLog, "link not L0; skipping"));
+      assert(touched == (1 | 2 | 4 | 8 | 16) && perst > 0 && window_reads == 0);
+      /* Local status reads are allowed during training, never endpoint reads. */
+      assert(strstr(mPcieShimLog, "link not ready; skipping iATU/ECAM"));
+    } else if (!root_valid) {
+      assert(window_reads == 0 && atu[1] == 0);
+      assert(strstr(mPcieShimLog, "root config invalid; skipping iATU/ECAM"));
+    } else if (!atu_ready) {
+      assert(window_reads == 0);
+      assert(strstr(mPcieShimLog, "iATU did not enable; skipping ECAM"));
+    } else if (drop_link) {
+      assert(window_reads == 0);
+      assert(strstr(mPcieShimLog, "link lost; skipping ECAM"));
+    } else if (endpoint_absent) {
+      assert(window_reads == 1);
+      assert(strstr(mPcieShimLog, "endpoint absent"));
     } else {
-      assert(touched == (1 | 2 | 4 | 8 | 16) && perst > 0 && window_reads == 5);
-      assert(strstr(mPcieShimLog, "link L0; probing"));
+      assert(touched == (1 | 2 | 4 | 8 | 16 | 32) && perst > 0 && window_reads == 3);
+      assert(strstr(mPcieShimLog, "endpoint vendor=17cb device=1103"));
     }
   }
   printf("stage=%u scenario=%s passed\n", PCIE_SHIM_STAGE, argv[1]);
@@ -193,7 +235,11 @@ def check(source_path, output):
         binary = path.with_suffix('')
         subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
                         str(path), '-o', str(binary)], check=True)
-        for scenario in ('power-timeout', 'phy-timeout', 'link-timeout', 'ok'):
+        scenarios = ['power-timeout', 'phy-timeout', 'link-timeout', 'ok']
+        if stage == 4:
+            scenarios += ['root-invalid', 'atu-timeout', 'link-lost',
+                          'xmlh-only', 'dll-only', 'endpoint-absent']
+        for scenario in scenarios:
             result = subprocess.run([str(binary), scenario],
                                     capture_output=True, text=True, timeout=5)
             if result.returncode:
@@ -210,7 +256,7 @@ def check(source_path, output):
         assert result.returncode != 0 and 'Invalid PCIe shim stage' in result.stderr
         results.append({'stage': stage, 'invalid_stage_rejected': True})
     (output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
-    print('PASS: clock votes/status, 16 staged MMIO cases, 2 invalid stages')
+    print('PASS: clock votes/status, 22 staged MMIO cases, 2 invalid stages')
 
 
 def main():

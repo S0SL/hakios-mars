@@ -66,8 +66,11 @@ static int power_ready, phy_ready, link_ready;
 static int root_valid, atu_ready, drop_link, dbi_routed;
 static int xmlh_only, dll_only, endpoint_absent;
 static unsigned touched, perst, window_reads, clock_writes, all_writes;
+static unsigned phy_writes, core_asserts, core_deasserts, phy_asserts, phy_deasserts;
 static UINTN waited;
 static uint32_t vote = 0xa5000040, clkref = 0x42;
+static uint32_t pipe_mux = 0xa5000002;
+static uint32_t core_reset = 0xa5000010, phy_reset = 0xa5000020;
 static uint32_t atu[7];
 static VOID access_address(UINTN address)
 {
@@ -84,14 +87,14 @@ static VOID access_address(UINTN address)
     touched |= 8;
     if (address >= TLMM_BASE + 94 * 0x1000 &&
         address < TLMM_BASE + 95 * 0x1000) {
-      assert(PCIE_SHIM_STAGE == 4 && phy_ready);
+      assert(PCIE_SHIM_STAGE >= 5 || phy_ready);
       perst++;
     }
   } else if (address >= DBI_BASE && address < DBI_BASE + 0x2000) {
-    assert(PCIE_SHIM_STAGE == 4 && power_ready && phy_ready && dbi_routed);
+    assert(PCIE_SHIM_STAGE >= 4 && power_ready && phy_ready && dbi_routed);
     touched |= 16;
   } else if (address >= ECAM_BASE && address < ECAM_BASE + 0x100000) {
-    assert(PCIE_SHIM_STAGE == 4 && power_ready && phy_ready && link_ready);
+    assert(PCIE_SHIM_STAGE >= 4 && power_ready && phy_ready && link_ready);
     assert(root_valid && atu_ready && !drop_link && atu[1] == 0x80000000);
     assert(atu[0] == 4 && atu[2] == 0x60100000 && atu[3] == 0);
     assert(atu[4] == 0x60100fff && atu[5] == 0x01000000 && atu[6] == 0);
@@ -106,7 +109,10 @@ static UINT32 MmioRead32(UINTN address)
 {
   access_address(address);
   if (address == GDSCR) return power_ready ? GDSC_STATUS | 1 : 1;
-  if (address == PHY_BASE + PHY_PCS_STATUS1) return phy_ready ? 0 : 0x48;
+  if (address == PHY_BASE + PHY_PCS_STATUS1) {
+    if (PCIE_SHIM_STAGE >= 5) assert(phy_writes == 75 && (vote & 0x10));
+    return phy_ready ? 0 : 0x48;
+  }
   if (address == PARF_BASE + PARF_LTSSM) return link_ready ? LTSSM_L0 : 0;
   if (address == DBI_BASE + 0xf28)
     return (link_ready || xmlh_only) && !(drop_link && atu[1]) ? (0x11 << 12) | 0x400 : 0;
@@ -118,6 +124,9 @@ static UINT32 MmioRead32(UINTN address)
   if (address == ECAM_BASE + 8) return 0x02800000;
   if (address == 0x152008) return vote;
   if (address == 0x18c004) return clkref;
+  if (address == 0x16b054) return pipe_mux;
+  if (address == 0x16b000) return core_reset;
+  if (address == 0x16c01c) return phy_reset;
   /* Distinct values catch mislabeled clock status addresses. */
   if (address == 0x16b028) return 0xa1;
   if (address == 0x16b024) return 0xa2;
@@ -139,7 +148,12 @@ static VOID MmioWrite32(UINTN address, UINT32 value)
   }
   if (address == 0x152008) {
     /* slv=0, mstr=1, cfg=2, aux=3, pipe=4, slv_q2a=5. */
-    assert(value == (vote | 0x3f));
+    if (PCIE_SHIM_STAGE >= 5 && phy_writes == 0)
+      assert(value == (vote | 0x2f));
+    else if (PCIE_SHIM_STAGE >= 5)
+      assert(phy_writes == 75 && value == (vote | 0x10));
+    else
+      assert(value == (vote | 0x3f));
     vote = value;
     clock_writes++;
   }
@@ -147,6 +161,28 @@ static VOID MmioWrite32(UINTN address, UINT32 value)
     assert(value == (clkref | 1));
     clkref = value;
     clock_writes++;
+  }
+  if (address == 0x16b054) {
+    assert(PCIE_SHIM_STAGE >= 5 && (value & ~3u) == (pipe_mux & ~3u));
+    assert((value & 3u) == 0);
+    pipe_mux = value;
+  }
+  if (address == 0x16b000) {
+    assert(PCIE_SHIM_STAGE >= 5 && (value & ~1u) == (core_reset & ~1u));
+    if (value & 1u) core_asserts++; else core_deasserts++;
+    core_reset = value;
+  }
+  if (address == 0x16c01c) {
+    assert(PCIE_SHIM_STAGE >= 5 && (value & ~1u) == (phy_reset & ~1u));
+    if (value & 1u) phy_asserts++; else phy_deasserts++;
+    phy_reset = value;
+  }
+  if (address >= PHY_BASE && address < PARF_BASE + 0x8000) {
+    if (PCIE_SHIM_STAGE >= 5) {
+      assert(pipe_mux == 0xa5000000);
+      assert(core_reset == 0xa5000010 && phy_reset == 0xa5000020);
+    }
+    phy_writes++;
   }
 }
 static EFI_STATUS mock_stall(UINTN delay)
@@ -180,8 +216,21 @@ int main(int argc, char **argv)
     assert(touched == 1 && all_writes == 1 && clock_writes == 0);
     assert(strstr(mPcieShimLog, "GDSC did not turn on"));
   } else {
-    assert(clock_writes == 2 && vote == 0xa500007f && clkref == 0x43);
+    assert(clock_writes == (PCIE_SHIM_STAGE >= 5 ? 3 : 2));
+    assert(vote == 0xa500007f && clkref == 0x43);
     assert(strstr(mPcieShimLog, "aux=a1 cfg=a2 mstr=a3 slv=a4 q2a=a5 pipe=a6"));
+    if (PCIE_SHIM_STAGE >= 5) {
+      assert(pipe_mux == 0xa5000000);
+      assert(core_asserts == 1 && core_deasserts == 1 && core_reset == 0xa5000010);
+      assert(phy_asserts == 1 && phy_deasserts == 1 && phy_reset == 0xa5000020);
+      assert(phy_writes == 75);
+      assert(strstr(mPcieShimLog, "pipe-v9 mux"));
+      assert(strstr(mPcieShimLog, "pipe-v9 core reset"));
+      assert(strstr(mPcieShimLog, "pipe-v9 phy reset"));
+      assert(strstr(mPcieShimLog, "pipe-v9 PIPE vote"));
+    } else {
+      assert(pipe_mux == 0xa5000002 && core_asserts == 0 && phy_asserts == 0);
+    }
     if (PCIE_SHIM_STAGE == 1) {
       assert(touched == 1);
       assert(strstr(mPcieShimLog, "stage1 power/clocks complete"));
@@ -189,7 +238,7 @@ int main(int argc, char **argv)
       assert(touched == (1 | 2 | 8) && perst == 0);
       assert(strstr(mPcieShimLog, "stage2 PARF/GPIO complete"));
     } else if (!phy_ready) {
-      assert(touched == (1 | 2 | 4 | 8) && perst == 0);
+      assert(touched == (1 | 2 | 4 | 8) && perst == (PCIE_SHIM_STAGE >= 5 ? 3 : 0));
       assert(strstr(mPcieShimLog, "PHY not ready; skipping"));
     } else if (PCIE_SHIM_STAGE == 3) {
       assert(touched == (1 | 2 | 4 | 8) && perst == 0);
@@ -228,7 +277,7 @@ def check(source_path, output):
     if source.count(anchor) != 1:
         raise ValueError('Expected default stage 1')
     results = []
-    for stage in range(1, 5):
+    for stage in range(1, 6):
         path = output / f'stage{stage}.c'
         path.write_text(PRELUDE + source.replace(anchor,
                         f'#define PCIE_SHIM_STAGE    {stage}') + POSTLUDE)
@@ -236,7 +285,7 @@ def check(source_path, output):
         subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
                         str(path), '-o', str(binary)], check=True)
         scenarios = ['power-timeout', 'phy-timeout', 'link-timeout', 'ok']
-        if stage == 4:
+        if stage >= 4:
             scenarios += ['root-invalid', 'atu-timeout', 'link-lost',
                           'xmlh-only', 'dll-only', 'endpoint-absent']
         for scenario in scenarios:
@@ -247,7 +296,7 @@ def check(source_path, output):
                 result.check_returncode()
             print(result.stdout, end='', flush=True)
             results.append({'stage': stage, 'scenario': scenario, 'passed': True})
-    for stage in (0, 5):
+    for stage in (0, 6):
         path = output / f'invalid{stage}.c'
         path.write_text(PRELUDE + source.replace(anchor,
                         f'#define PCIE_SHIM_STAGE    {stage}') + POSTLUDE)
@@ -256,7 +305,7 @@ def check(source_path, output):
         assert result.returncode != 0 and 'Invalid PCIe shim stage' in result.stderr
         results.append({'stage': stage, 'invalid_stage_rejected': True})
     (output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
-    print('PASS: clock votes/status, 22 staged MMIO cases, 2 invalid stages')
+    print('PASS: clock/reset sequencing, 32 staged MMIO cases, 2 invalid stages')
 
 
 def main():

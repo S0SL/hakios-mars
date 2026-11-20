@@ -10,7 +10,7 @@
 
 #define PCIE_SHIM_STAGE    1
 
-#if PCIE_SHIM_STAGE < 1 || PCIE_SHIM_STAGE > 4
+#if PCIE_SHIM_STAGE < 1 || PCIE_SHIM_STAGE > 5
 #error Invalid PCIe shim stage
 #endif
 
@@ -23,6 +23,10 @@
 #define GDSCR             0x0016b004u
 #define GCC_PCIE_CLKREF   (GCC_BASE + 0x8c004u)
 #define GCC_PCIE_VOTE     (GCC_BASE + 0x52008u)
+#define GCC_PCIE_CORE_RESET (GCC_BASE + 0x6b000u)
+#define GCC_PCIE_PIPE_MUX (GCC_BASE + 0x6b054u)
+#define GCC_PCIE_PHY_RESET (GCC_BASE + 0x6c01cu)
+#define PCIE_PIPE_MUX_MASK 3u
 /* SM8350 gcc-lahaina.c: shared vote bits, not the CBCR register order. */
 #define PCIE_SLV_AXI      (1u << 0)
 #define PCIE_MSTR_AXI     (1u << 1)
@@ -115,6 +119,33 @@ report_clocks (CONST CHAR8 *Phase)
       Phase, rd (GCC_BASE + 0x6b028), rd (GCC_BASE + 0x6b024),
       rd (GCC_BASE + 0x6b01c), rd (GCC_BASE + 0x6b014),
       rd (GCC_BASE + 0x6b010), rd (GCC_BASE + 0x6b030));
+}
+
+static VOID
+select_pipe_parent (VOID)
+{
+  UINT32 Before = rd (GCC_PCIE_PIPE_MUX);
+  UINT32 After = (Before & ~PCIE_PIPE_MUX_MASK) | 0u;
+
+  /* Xiaomi's pcie_pipe_clk_mux -> pcie_pipe_clk_ext_src selects parent 0. */
+  wr (GCC_PCIE_PIPE_MUX, After);
+  gBS->Stall (10);
+  reportf ("pcieshim: pipe-v9 mux before=%x after=%x readback=%x\n",
+      Before, After, rd (GCC_PCIE_PIPE_MUX));
+}
+
+static VOID
+pulse_reset (CONST CHAR8 *Name, UINTN Address)
+{
+  UINT32 Before = rd (Address);
+  UINT32 Asserted = Before | 1u;
+
+  wr (Address, Asserted);
+  gBS->Stall (1000);
+  wr (Address, rd (Address) & ~1u);
+  gBS->Stall (1000);
+  reportf ("pcieshim: pipe-v9 %a reset before=%x asserted=%x final=%x\n",
+      Name, Before, Asserted, rd (Address));
 }
 
 static VOID
@@ -212,6 +243,7 @@ EFI_STATUS EFIAPI
 PcieShimEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
 {
   UINT32 Value;
+  UINT32 ClockMask = PCIE_CLOCK_VOTES;
   UINT32 PhyStatus = 0;
   UINTN Index;
   UINTN Tries;
@@ -242,16 +274,28 @@ PcieShimEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
   }
   reportf ("pcieshim: GDSCR ready value=%x\n", Value);
 
+  if (PCIE_SHIM_STAGE >= 5) {
+    /* Match pci-msm.c: hold the endpoint in reset across RC/PHY reset. */
+    set_perst (0);
+    select_pipe_parent ();
+    /* Linux enables the PIPE branch only after loading the PHY sequence. */
+    ClockMask &= ~PCIE_PIPE;
+  }
+
   report_clocks ("pre");
   reportf ("pcieshim: clocks-v7 vote pre=%x clkref=%x mask=%x\n",
-      rd (GCC_PCIE_VOTE), rd (GCC_PCIE_CLKREF), (UINT32)PCIE_CLOCK_VOTES);
+      rd (GCC_PCIE_VOTE), rd (GCC_PCIE_CLKREF), ClockMask);
   /* These registers also hold other clients' votes. Never replace the word. */
   wr (GCC_PCIE_CLKREF, rd (GCC_PCIE_CLKREF) | 1u);
-  wr (GCC_PCIE_VOTE, rd (GCC_PCIE_VOTE) | PCIE_CLOCK_VOTES);
+  wr (GCC_PCIE_VOTE, rd (GCC_PCIE_VOTE) | ClockMask);
   gBS->Stall (1000);
   reportf ("pcieshim: clocks-v7 vote post=%x clkref=%x\n",
       rd (GCC_PCIE_VOTE), rd (GCC_PCIE_CLKREF));
   report_clocks ("post");
+  if (PCIE_SHIM_STAGE >= 5) {
+    pulse_reset ("core", GCC_PCIE_CORE_RESET);
+    pulse_reset ("phy", GCC_PCIE_PHY_RESET);
+  }
   if (PCIE_SHIM_STAGE == 1) {
     reportf ("pcieshim: stage1 power/clocks complete; returning\n");
     return EFI_SUCCESS;
@@ -282,6 +326,12 @@ PcieShimEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
     wr (PHY_BASE + mPhySequence[Index].Offset, mPhySequence[Index].Value);
   }
   gBS->Stall (1000);
+  if (PCIE_SHIM_STAGE >= 5) {
+    wr (GCC_PCIE_VOTE, rd (GCC_PCIE_VOTE) | PCIE_PIPE);
+    gBS->Stall (1000);
+    reportf ("pcieshim: pipe-v9 PIPE vote=%x mux=%x\n",
+        rd (GCC_PCIE_VOTE), rd (GCC_PCIE_PIPE_MUX));
+  }
   for (Tries = 0; Tries < 10; Tries++) {
     PhyStatus = rd (PHY_BASE + PHY_PCS_STATUS1);
     if ((PhyStatus & (1u << 6)) == 0) {

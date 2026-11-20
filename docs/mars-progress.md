@@ -338,6 +338,61 @@ signature appears in the capture. Android completed on slot b. No
 partition was flashed or slot changed. The tested image does not connect
 Wi-Fi; link training is the current blocker.
 
+### Android hardware reference and stage-5 trial
+
+After the stage-4 trial, Android again enumerated `17cb:1103`, bound its
+CNSS PCI driver and exposed `wlan0`; the negotiated link was 5 GT/s x1.
+The same live FDT maps the Wi-Fi `wlan-en-gpio` to GPIO64 and describes five
+CNSS supply rails plus the antenna-switch rail. Android's regulator
+sysfs showed all six enabled during this reference capture. The saved FDT
+and the selected-property decoder are local at `mars-device-tree.dtb` and
+`diagnostics/wifi-research-20261120/dump-relevant-fdt.py`. This confirms
+that the endpoint works under Android's initialization; it does not prove
+the rails remained enabled during the temporary Darwin boot.
+
+Comparing the temporary path with Xiaomi's `venus-r-oss` `pci-msm.c`
+revealed missing, device-tree-backed setup before link training. Linux
+switches the PIPE mux to the externally supplied `PCIE_0_PIPE_CLK`, toggles
+the named core and PHY resets (GCC `0x6b000` and `0x6c01c`, 1 ms each),
+loads the PHY sequence, then enables the PIPE clock before polling PHY
+readiness. The trial only enabled the vote early; it did not select the
+parent or pulse those resets. On this board the live DT resolves the PIPE
+mux to GCC clock ID `0x3a`, external parent ID `1`, and the named resets to
+GCC reset IDs 4 and 7.
+
+The build-local stage-5 trial now applies that bounded sequence: assert
+PERST, select the external PIPE parent while preserving other mux bits,
+vote the four controller clocks without PIPE, pulse core/PHY reset with
+readback, program the PARF and PHY sequence, then add the PIPE vote before
+the ready check. It retains the default stage-1 source and uses no direct
+PMIC writes. Host MMIO tests pass for all five stages (32 scenarios),
+including both reset pulses, mux selection, delayed PIPE enable, link
+timeouts, lost-link checks and suppression of endpoint access.
+
+The stage-5 local RELEASE build succeeded and the user confirmed a desktop.
+Image: `diagnostics/wifi-pipe-v9-s5-20261120/mars-wifi-pipe-v9-s5.img`,
+11,782,144 bytes, SHA-256
+`5a7d6838a4320131dd9f094b1aa26f6150645cb9099bfc4ec8cef7ae769bf247`.
+FD SHA-256:
+`52524ac49f4fbaec3f9eb6c7674024502292d3aca542f05a5b907fdf514e9502`.
+The fresh `persist-v9.bin` log SHA-256 is
+`da5c93c7389bcc312583387f3f901aac95212790fb775d50217a4f1e29cc7033`.
+It confirms PIPE mux `2 -> 0`, core/PHY reset pulses `0 -> 1 -> 0`, and
+the PIPE vote enabled after PHY programming. PHY is ready at
+`PCS_STATUS1=0x86`; the 100 ms link poll still ends at `ELBI=0x1`, LTSSM
+`0`, and DLL-active clear, so endpoint access is skipped. SpringBoard
+starts, 46 init checks pass, and no panic signature appears. Android
+returned on slot b; no partition was flashed. Reset and PIPE-clock
+selection alone did not resolve link training.
+
+The just-before-test Android capture showed all five CNSS WLAN rails and
+the antenna-switch rail enabled: PMR735A S2, PM8350 S11/S10, PM8350C S1,
+PM8350 S12 and PMR735A L7. This is an Android reference, not a measurement
+of their UEFI state. The shim drives WLAN_EN via GPIO64 but does not submit
+CNSS supply votes to RPMh. Inspect the installed RPMh/NPA/VCS UEFI interfaces
+and initialization ordering before another RF-power test; do not use raw
+PMIC writes.
+
 ## Current status (one screen)
 
 | Track | State |
@@ -352,8 +407,8 @@ Wi-Fi; link training is the current blocker.
 | Run logs | **Working** — full log at the 8 GiB offset in `darwin`; check image markers for freshness |
 | GPU polish | **-31% stutter** (64.5→40 ms/frame): shader warm-up v2, sampled hash, TexSubImage reuse, EGLImage fail cache |
 | USB fastboot channel | **Partial** — enumeration flaky behind Qcom `UsbfnDwc`; 30 s idle auto-run fallback in loader |
-| UEFI PCIe shim | **Stage-4 desktop verified** — corrected AUX/master clock votes and PHY ready; guarded link training stops at LTSSM `Detect.Active`, with no endpoint response |
-| Wi-Fi / PCIe (QCA6490) | **PCIe PHY ready, link down** — latest `ELBI=0x1001`, LTSSM `0x1`, DLL-active clear; endpoint/config-space access safely skipped; Wi-Fi unavailable |
+| UEFI PCIe shim | **Stage-5 desktop verified** — external PIPE parent selected; core/PHY resets pulsed; PIPE vote enabled; PHY ready; link still down |
+| Wi-Fi / PCIe (QCA6490) | **Android hardware works; temporary Darwin link down** — Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`; stages 4–5 stop before DLL-active; UEFI RPMh supply voting remains unimplemented |
 
 ## 2026-11-19 follow-up: bounded PCIe shim stages (v6)
 

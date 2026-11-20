@@ -53,6 +53,19 @@ and sets up a bounded 4 KiB CFG0 iATU window before endpoint reads. The user con
 `persist-v8.bin` log has SHA-256 `6ebbcdf34a54f02be5c78e943cae2eef75c8f78d708a4eef672e0c765344aa12`.
 It records LTSSM `Detect.Active`, an inactive DLL and no ECAM access. The link is still down.
 
+After returning to Android, the same phone enumerated `17cb:1103` at 5 GT/s x1 under `cnss_pci` and exposed `wlan0`.
+The saved live FDT maps WLAN_EN to GPIO64 and lists five WLAN rails plus the antenna-switch rail; all six regulators
+reported enabled in the Android reference capture. The UEFI stage-4 log only proves GPIO64 was driven high and does not
+confirm that RPMh rail votes survived the transition.
+
+The stage-5 trial follows Xiaomi's controller sequence more closely: select the external PIPE-clock parent (`PCIE_0_PIPE_CLK`),
+pulse the FDT-named core and PHY resets, and enable the PIPE vote after the PHY register sequence. This addresses concrete
+gaps in the prior shim. The RELEASE build and temporary desktop boot succeeded. Its `persist-v9.bin` log has SHA-256
+`da5c93c7389bcc312583387f3f901aac95212790fb775d50217a4f1e29cc7033`. It records mux `2 -> 0`, both reset pulses
+`0 -> 1 -> 0`, and the PIPE vote turning on after PHY programming. PHY reports ready, but link training ends at LTSSM 0
+with DLL-active clear; endpoint access is skipped. Android reported all five CNSS rails and the antenna-switch rail enabled
+in its reference boot. UEFI has not yet requested them through RPMh. Host MMIO checks pass; default remains stage 1.
+
 ## Required Mars boot configuration
 
 The original Venus memory map and vendor driver lists cause an early reset on Mars. Keep these recovered settings:

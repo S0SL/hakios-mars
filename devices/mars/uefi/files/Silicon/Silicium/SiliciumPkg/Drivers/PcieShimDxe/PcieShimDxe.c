@@ -130,6 +130,16 @@ report_clocks (CONST CHAR8 *Phase)
 }
 
 static VOID
+report_phy_clocks (CONST CHAR8 *Phase)
+{
+  /* SM8350 GCC maps the PHY rate-change branch to this CBCR and RCG. */
+  reportf ("pcieshim: clk-v11 %a vote=%x refgen=%x cmd=%x cfg=%x pipe=%x\n",
+      Phase, rd (GCC_BASE + 0x52000), rd (GCC_BASE + 0x6b038),
+      rd (GCC_BASE + 0x6b03c), rd (GCC_BASE + 0x6b040),
+      rd (GCC_BASE + 0x6b030));
+}
+
+static VOID
 select_pipe_parent (VOID)
 {
   UINT32 Before = rd (GCC_PCIE_PIPE_MUX);
@@ -199,6 +209,10 @@ probe_link (VOID)
       break;
     }
     gBS->Stall (1000);
+  }
+  if (PCIE_SHIM_STAGE >= 5) {
+    reportf ("pcieshim: clk-v11 LTSSM ctrl=%x PERST io=%x\n",
+        rd (PARF_BASE + PARF_LTSSM), rd (TLMM_BASE + 94u * 0x1000u + 4));
   }
   reportf ("pcieshim: link-v8 ELBI=%x LTSSM=%x DLL=%x after=%u ms\n",
       Elbi, (Elbi >> 12) & 0x3fu, Dll, (UINT32)Tries);
@@ -285,6 +299,7 @@ PcieShimEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
   if (PCIE_SHIM_STAGE >= 5) {
     /* Match pci-msm.c: hold the endpoint in reset across RC/PHY reset. */
     set_perst (0);
+    report_phy_clocks ("pre");
     select_pipe_parent ();
     /* Linux enables the PIPE branch only after loading the PHY sequence. */
     ClockMask &= ~PCIE_PIPE;
@@ -339,6 +354,7 @@ PcieShimEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
     gBS->Stall (1000);
     reportf ("pcieshim: pipe-v9 PIPE vote=%x mux=%x\n",
         rd (GCC_PCIE_VOTE), rd (GCC_PCIE_PIPE_MUX));
+    report_phy_clocks ("post");
   }
   for (Tries = 0; Tries < 10; Tries++) {
     PhyStatus = rd (PHY_BASE + PHY_PCS_STATUS1);

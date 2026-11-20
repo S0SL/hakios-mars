@@ -421,9 +421,46 @@ The live DT also names separate PCIe root-controller supplies and a PHY
 rate-change clock. Android's read-only regulator capture showed PM8350 L5
 enabled at 0.88 V, PM8350 L6 enabled at 1.2 V, and the PM8350C S6 CX vote
 at level 256. These are Android readings. UEFI must still verify those
-supplies and the GCC PHY rate-change branch before attributing the missing
-PIPE output to the endpoint's WLAN supply rails. Check the branch and its
-source readback before adding a clock or regulator vote.
+supplies and do not establish UEFI state. Stage 11 confirms the GCC PHY
+rate-change branch is voted on, but its RCG still selects the 19.2-MHz
+TCXO source. Qualcomm's 100-MHz PHY rate is selected as PCIe link bandwidth
+scales after link-up; Mars has no `qcom,bw-scale` or
+`qcom,target-link-speed` property. There is not yet evidence that pre-voting
+that rate is required for initial training. Before trialling the RCG's
+100-MHz setting, identify the CX voltage level required by GPLL0 and the
+correct VCS/NPA vote interface; do not use direct PMIC writes.
+
+### Stage 11: verify the PHY reference clock
+
+The stage-11 RELEASE image retains the verified TCXO PIPE mux and reads back
+the GCC PHY rate-change branch, its source RCG and PERST state before and
+after enabling the PIPE vote. The image SHA-256 is
+`e796c5ead0d59ad08b1e92e20152ef89fcaa2951dba219d02cf9a5fcb7637ee4`;
+the matching firmware SHA-256 is
+`e29ecaa3471b87dba20d0bea26e257a85a7beb6d31f16655ef3d0c4630272a18`.
+Independent verification confirms a valid boot ID and preservation of the
+loader, kernel, DTB, boot ramdisks and other payload entries. An FFS hash
+comparison found only PcieShimDxe changed among 94 files.
+
+The fresh log `diagnostics/wifi-clkread-v11-s5-20261120/persist-after.bin`
+has SHA-256
+`44f72ce96d9ceb1ee4f19b64164e505d2d7271b4d885dc97b11344f48c944246`.
+It confirms the PHY rate-change branch vote is set (bit 22 in vote
+`0xe0057f`) and its halt status is clear (`refgen=0`, branch running). The
+RCG source-select bits remain zero, selecting `bi_tcxo` at 19.2 MHz; the
+100-MHz setting in Qualcomm's table is a separate rate used for PCIe speed
+scaling after link-up. Mars has no `qcom,bw-scale` or
+`qcom,target-link-speed` property, so there is not yet evidence that
+pre-voting 100 MHz is required for initial training.
+
+PERST is released (`GPIO94 io=3`), the PARF training enable is set
+(`LTSSM ctrl=0x101`) and PHY reports ready (`PCS_STATUS1=0x86`), but link
+training still ends at `ELBI=0x1001`, LTSSM `Detect.Active`, with DLL-active
+clear. The endpoint remains inaccessible. All 46 init checks passed; the
+user confirmed the desktop and returned to Android. The Android reference
+regulator values are separately recorded for the preceding TCXO test in
+`diagnostics/wifi-pipe-xo-v10-s5-20261120/android-regulators.txt`; they do
+not establish UEFI regulator state.
 
 ## Current status (one screen)
 
@@ -439,8 +476,8 @@ source readback before adding a clock or regulator vote.
 | Run logs | **Working** — full log at the 8 GiB offset in `darwin`; check image markers for freshness |
 | GPU polish | **-31% stutter** (64.5→40 ms/frame): shader warm-up v2, sampled hash, TexSubImage reuse, EGLImage fail cache |
 | USB fastboot channel | **Partial** — enumeration flaky behind Qcom `UsbfnDwc`; 30 s idle auto-run fallback in loader |
-| UEFI PCIe shim | **Stage-5 PIPE parent comparison verified** — PHY ready with either parent, TCXO reaches Detect.Active, DLL remains inactive |
-| Wi-Fi / PCIe (QCA6490) | **Android hardware works; temporary Darwin link down** — Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`; stages 4–5 stop before DLL-active; UEFI RPMh supply voting remains unimplemented |
+| UEFI PCIe shim | **Stage-11 clock state verified** — PHY reference branch is voted on at its 19.2 MHz TCXO source; TCXO reaches Detect.Active, DLL remains inactive |
+| Wi-Fi / PCIe (QCA6490) | **Android hardware works; temporary Darwin link down** — Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`; stages 4–5 and 11 stop before DLL-active; UEFI PCIe/CNSS RPMh supply votes remain unimplemented |
 
 ## 2026-11-19 follow-up: bounded PCIe shim stages (v6)
 

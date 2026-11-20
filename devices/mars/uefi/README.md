@@ -71,6 +71,11 @@ reached the iOS desktop and read back mux `2 -> 2`. The link reached `Detect.Act
 with DLL inactive and endpoint access skipped. The host checks now cover both parents for stage 5
 (42 cases total). See `docs/mars-progress.md` for the image and log hashes.
 
+The subsequent clock-readback image confirms that the PHY rate-change branch vote is on and its branch halt bit is clear.
+The source RCG remains on `bi_tcxo` (19.2 MHz). Qualcomm's 100 MHz rate is used for bandwidth scaling after link-up;
+the Mars tree does not define `qcom,bw-scale` or `qcom,target-link-speed`. Link training still stops at `Detect.Active`,
+so the next blocker is the controller/endpoint power and link sequence rather than an unverified clock vote.
+
 ## Required Mars boot configuration
 
 The original Venus memory map and vendor driver lists cause an early reset on Mars. Keep these recovered settings:

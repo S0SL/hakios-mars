@@ -263,6 +263,11 @@ int main(int argc, char **argv)
       assert(touched == (1 | 2 | 4 | 8 | 16 | 32) && perst > 0 && window_reads == 3);
       assert(strstr(mPcieShimLog, "endpoint vendor=17cb device=1103"));
     }
+    if (PCIE_SHIM_STAGE >= 5) {
+      assert(strstr(mPcieShimLog, "clk-v11 pre vote="));
+      assert(strstr(mPcieShimLog, "clk-v11 post vote="));
+      if (phy_ready) assert(strstr(mPcieShimLog, "clk-v11 LTSSM ctrl="));
+    }
   }
   printf("stage=%u scenario=%s passed\n", PCIE_SHIM_STAGE, argv[1]);
   return 0;

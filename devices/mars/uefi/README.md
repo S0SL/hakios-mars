@@ -84,8 +84,11 @@ The original Venus memory map and vendor driver lists cause an early reset on Ma
 - The UEFI FD is 3 MiB at `0x9FC00000`, with the CPU vectors at `0x9FF8C000` and the display at `0xEA600000`.
 - `0xA0000000` through `0xAFFFFFFF` is conventional memory for loading the EFI application. The 64 MiB XNUP payload
   reservation at `0xF0000000` must be mapped before BDS accesses it.
-- `APRIORI.inc` and `DXE.inc` keep `EnvDxe`, `ClockDxe`, `SdccDxe`, `CPRDxe`, `ScmDxeLA`, `TzDxeLA`,
+- `APRIORI.inc` and `DXE.inc` keep `EnvDxe`, `SdccDxe`, `CPRDxe`, `ScmDxeLA`, `TzDxeLA`,
   `ShmBridgeDxeLA`, and `SPSSDxe` out of the boot path. Restoring them requires separate bring-up work.
+- The v19 trial added the pinned Mu-Silicium Venus `ClockDxe` before the Mars PCIe shim. The original
+  Venus and Mars binaries and dependency expressions match byte for byte. The Venus INF selects
+  the upstream patched binary. The trial reached the desktop and found the clock protocol.
 - Keep `UFSDxe` in the firmware and its two verified listener stubs in the local vendor input. For the extracted Mars
   version, offsets `0x10900` and `0xFD2C` contain `e0031faac0035fd6`; the patched PE has SHA-256
   `c162bfd021e143fa438f38e4da1a1719e308a7bec1e707cbf264a673540a1969`. Other versions need independent verification.

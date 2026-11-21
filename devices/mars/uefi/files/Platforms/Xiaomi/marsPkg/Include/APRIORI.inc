@@ -73,6 +73,7 @@ APRIORI DXE {
   INF Binaries/mars/QcomPkg/Drivers/UsbPwrCtrlDxe/UsbPwrCtrlDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/QcomChargerDxe/QcomChargerDxeLA.inf
   INF Binaries/mars/QcomPkg/Drivers/ChargerExDxe/ChargerExDxe.inf
+  INF Binaries/venus/QcomPkg/Drivers/ClockDxe/ClockDxe.inf
   INF SiliciumPkg/Drivers/PcieShimDxe/PcieShimDxe.inf
   INF Binaries/mars/QcomPkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.inf
   INF Binaries/mars/QcomPkg/Drivers/XhciPciEmulationDxe/XhciPciEmulationDxe.inf

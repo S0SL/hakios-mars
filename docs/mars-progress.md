@@ -489,8 +489,28 @@ The 2 MiB log in `diagnostics/wifi-clockapi-v18-s5-20261120/persist-after.bin`
 has SHA-256
 `7933eae9d861d55cd4087df35dc92a6326fd2b4c150e118ac132fb827c5e8416`.
 The stock Mars and Venus ClockDxe binaries have identical SHA-256 hashes.
-Venus dispatches an upstream patched copy after VcsDxe. Check that driver's
-initialization and dependencies before adding it to a controlled Mars trial.
+Venus dispatches an upstream patched copy after VcsDxe.
+
+### 2026-11-22: v19 registers the Qualcomm clock protocol
+
+The v19 image loads the pinned Mu-Silicium Venus `ClockDxe` immediately before
+`PcieShimDxe` in the DXE APRIORI list, after the clock driver's dependencies.
+The stock Mars and Venus PE and dependency expressions match byte for byte.
+The Venus INF selects the upstream patched binary with SHA-256
+`c3cd6bed288f36c1d79c5257d3ed3a487d364fab5572a082bbb48758b071092f`.
+The unpacked v19 firmware has 95 modules. Compared with v18, it adds
+`ClockDxe` and updates the DXE dispatch list and the SMBIOS build date.
+The PCIe shim is byte-identical to v18.
+
+Independent boot-image verification passed. The user confirmed the iOS
+desktop and returned to Android on slot b. The fresh `wifi-clockdxe-v19-s5`
+log reports `clock-api locate status=0` and all 46 init checks passed.
+PCIe still times out at Detect.Active (`ELBI=0x1001`,
+`DLL=0x10110008`). The QCA6490 remains unenumerated.
+The temporary image SHA-256 is
+`375b9e1548b2b83019f1d26543dae3f2bb1451f764a2f36d9affbef3af39bede`.
+The SHA-256 of `diagnostics/wifi-clockdxe-v19-s5-20261122/persist-after.bin`
+is `5be4d8a2756de420fc78b0ef7cb731be07c035240aed9e87cd048174a1452cde`.
 
 ## Current status (one screen)
 
@@ -506,8 +526,8 @@ initialization and dependencies before adding it to a controlled Mars trial.
 | Run logs | **Working** — full log at the 8 GiB offset in `darwin`; check image markers for freshness |
 | GPU polish | **-31% stutter** (64.5→40 ms/frame): shader warm-up v2, sampled hash, TexSubImage reuse, EGLImage fail cache |
 | USB fastboot channel | **Partial** — enumeration flaky behind Qcom `UsbfnDwc`; 30 s idle auto-run fallback in loader |
-| UEFI PCIe shim | **v18 desktop verified** — ClockDxe absent from FVMAIN and its protocol lookup returns EFI_NOT_FOUND. The PHY reference branch runs from the 19.2 MHz TCXO source |
-| Wi-Fi / PCIe (QCA6490) | **Android enumerates; Darwin link stalls** — Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`. v18 reaches Detect.Active with DLL inactive. UEFI PCIe/CNSS RPMh supply votes remain unimplemented |
+| UEFI PCIe shim | **v19 desktop verified** — ClockDxe registers the clock protocol before the PCIe shim. The PHY reference branch runs from the 19.2 MHz TCXO source |
+| Wi-Fi / PCIe (QCA6490) | **Android enumerates. Darwin link stalls.** Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`. v19 reaches Detect.Active with DLL inactive. UEFI PCIe/CNSS RPMh supply votes remain unimplemented |
 
 ## 2026-11-19 follow-up: bounded PCIe shim stages (v6)
 

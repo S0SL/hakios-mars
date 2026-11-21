@@ -512,6 +512,34 @@ The temporary image SHA-256 is
 The SHA-256 of `diagnostics/wifi-clockdxe-v19-s5-20261122/persist-after.bin`
 is `5be4d8a2756de420fc78b0ef7cb731be07c035240aed9e87cd048174a1452cde`.
 
+### 2026-11-22: v20 checks the PHY clock through ClockDxe
+
+The local v20 diagnostic uses the pinned Qualcomm `EFIClock.h` interface
+after enabling the PIPE clock. It reached the desktop and passed all 46 init
+checks. The fresh `wifi-clockrate-v20-s5` log confirms protocol version
+`0x10009` and a successful lookup of `gcc_pcie0_phy_rchng_clk`.
+`GetClockFreqHz` returned `EFI_PROTOCOL_ERROR` (`0x8000000000000018`),
+so the firmware API did not provide a frequency measurement. GCC readback
+still shows the enabled rate-change branch and the TCXO source selection.
+The PHY reports ready and the link still stops at Detect.Active
+(`ELBI=0x1001`, `DLL=0x10110008`).
+
+The image SHA-256 is
+`a5f25c9a2c3fb74547bd4450b186d09081fae7823b3cbd347a1d8f743cd24672`.
+Independent verification preserved the v19 boot payload except for the boot
+marker and firmware. Only PcieShimDxe changed among the 95 FFS files. Android
+returned on slot b. The log
+`diagnostics/wifi-clockrate-v20-s5-20261122/persist-after.bin` has SHA-256
+`08e497f0c8481804f3463c9218297bd0a6bc3c63134b392ad50906a38314e756`.
+
+The live Mars device tree assigns PCIe controller supplies to RPMh
+`ldob5` (PM8350 L5), `ldob6` (PM8350 L6), and `cx.lvl` (PM8350C S6),
+in addition to the GDSC. The QCA6490 has separate CNSS supplies. The shim
+currently enables the GDSC and drives WLAN_EN without implementing those
+regulator votes. The remaining diagnosis needs UEFI-side power readings
+or a verified regulator interface. The prior Android regulator samples
+only describe the Android state.
+
 ## Current status (one screen)
 
 | Track | State |
@@ -526,8 +554,8 @@ is `5be4d8a2756de420fc78b0ef7cb731be07c035240aed9e87cd048174a1452cde`.
 | Run logs | **Working** — full log at the 8 GiB offset in `darwin`; check image markers for freshness |
 | GPU polish | **-31% stutter** (64.5→40 ms/frame): shader warm-up v2, sampled hash, TexSubImage reuse, EGLImage fail cache |
 | USB fastboot channel | **Partial** — enumeration flaky behind Qcom `UsbfnDwc`; 30 s idle auto-run fallback in loader |
-| UEFI PCIe shim | **v19 desktop verified** — ClockDxe registers the clock protocol before the PCIe shim. The PHY reference branch runs from the 19.2 MHz TCXO source |
-| Wi-Fi / PCIe (QCA6490) | **Android enumerates. Darwin link stalls.** Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`. v19 reaches Detect.Active with DLL inactive. UEFI PCIe/CNSS RPMh supply votes remain unimplemented |
+| UEFI PCIe shim | **v20 diagnostic desktop verified** — ClockDxe finds the PHY rate-change clock by name. Its frequency query returns EFI_PROTOCOL_ERROR. GCC readback shows the enabled branch and TCXO source selection |
+| Wi-Fi / PCIe (QCA6490) | **Android enumerates. Darwin link stalls.** Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`. v20 reaches Detect.Active with DLL inactive. UEFI PCIe and CNSS supply votes remain unimplemented |
 
 ## 2026-11-19 follow-up: bounded PCIe shim stages (v6)
 

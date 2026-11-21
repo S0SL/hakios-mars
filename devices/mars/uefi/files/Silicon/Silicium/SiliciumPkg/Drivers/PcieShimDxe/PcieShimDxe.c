@@ -264,6 +264,106 @@ probe_link (VOID)
       Id & 0xffffu, Id >> 16, rd (ECAM_BASE + 4), rd (ECAM_BASE + 8));
 }
 
+/* These Mars addresses match the live Android device tree and the camera driver. */
+#define MARS_CMD_DB_BASE 0x80860000u
+#define MARS_CMD_DB_SIZE 0x20000u
+#define MARS_RSC_DRV2    0x18220000u
+#define MARS_RSC_TCS     0xd00u
+#define MARS_TCS_STRIDE  672u
+#define MARS_TCS_COUNT   8u
+#define MARS_CMD_COUNT   16u
+
+typedef struct {
+  UINT16 Id;
+  UINT16 HeaderOffset;
+  UINT16 DataOffset;
+  UINT16 Count;
+  UINT16 Version;
+  UINT16 Reserved[3];
+} MARS_CMD_DB_SLAVE;
+
+typedef struct {
+  UINT32 Version;
+  UINT32 Magic;
+  MARS_CMD_DB_SLAVE Slave[8];
+  UINT32 Checksum;
+  UINT32 Reserved;
+} MARS_CMD_DB_HEADER;
+
+typedef struct {
+  CHAR8 Id[8];
+  UINT32 Priority[2];
+  UINT32 Address;
+  UINT16 Length;
+  UINT16 Offset;
+} MARS_CMD_DB_ENTRY;
+
+static UINT32
+find_rpmh_address (CONST MARS_CMD_DB_HEADER *Database, CONST CHAR8 Name[8])
+{
+  CONST UINT8 *Data = (CONST UINT8 *)(UINTN)(MARS_CMD_DB_BASE + sizeof (*Database));
+  CONST UINTN DataSize = MARS_CMD_DB_SIZE - sizeof (*Database);
+
+  for (UINTN Index = 0; Index < ARRAY_SIZE (Database->Slave); ++Index) {
+    CONST MARS_CMD_DB_SLAVE *Slave = &Database->Slave[Index];
+    if (Slave->Id == 0 || Slave->Count > 512 ||
+        Slave->HeaderOffset >= DataSize ||
+        Slave->Count > (DataSize - Slave->HeaderOffset) / sizeof (MARS_CMD_DB_ENTRY)) {
+      continue;
+    }
+    for (UINTN EntryIndex = 0; EntryIndex < Slave->Count; ++EntryIndex) {
+      MARS_CMD_DB_ENTRY Entry;
+      CopyMem (&Entry, Data + Slave->HeaderOffset + EntryIndex * sizeof (Entry),
+          sizeof (Entry));
+      if (CompareMem (Entry.Id, Name, sizeof (Entry.Id)) == 0) {
+        return Entry.Address;
+      }
+    }
+  }
+  return 0;
+}
+
+static VOID
+report_rpmh_requests (VOID)
+{
+  static CONST struct {
+    CHAR8 Name[8];
+    BOOLEAN Vrm;
+  } Rails[] = {
+    { "ldob5", TRUE }, { "ldob6", TRUE }, { "cx.lvl", FALSE },
+    { "smpe2", TRUE }, { "smpb11", TRUE }, { "smpb10", TRUE },
+    { "smpc1", TRUE }, { "smpb12", TRUE }
+  };
+  MARS_CMD_DB_HEADER Database;
+
+  CopyMem (&Database, (CONST VOID *)(UINTN)MARS_CMD_DB_BASE, sizeof (Database));
+  if (Database.Magic != 0x0c0330dbu) {
+    reportf ("pcieshim: rpmh-v21 cmd-db magic=%x\n", Database.Magic);
+    return;
+  }
+  for (UINTN Rail = 0; Rail < ARRAY_SIZE (Rails); ++Rail) {
+    UINT32 Address = find_rpmh_address (&Database, Rails[Rail].Name);
+    UINT32 MatchMask = 0;
+    UINT32 EnabledMask = 0;
+    /* This is a snapshot of DRV2's programmed slots, not a regulator reading. */
+    for (UINTN Tcs = 0; Address != 0 && Tcs < MARS_TCS_COUNT; ++Tcs) {
+      UINTN TcsBase = MARS_RSC_DRV2 + MARS_RSC_TCS + MARS_TCS_STRIDE * Tcs;
+      UINT32 Enabled = rd (TcsBase + 0x1c);
+      for (UINTN Slot = 0; Slot < MARS_CMD_COUNT; ++Slot) {
+        UINT32 Where = rd (TcsBase + 0x34 + 20 * Slot);
+        if (Where == Address || (Rails[Rail].Vrm && Where == Address + 4)) {
+          MatchMask |= 1u << Tcs;
+          if ((Enabled & (1u << Slot)) != 0) {
+            EnabledMask |= 1u << Tcs;
+          }
+        }
+      }
+    }
+    reportf ("pcieshim: rpmh %a addr=%x tcs=%x en=%x\n",
+        Rails[Rail].Name, Address, MatchMask, EnabledMask);
+  }
+}
+
 EFI_STATUS EFIAPI
 PcieShimEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
 {
@@ -369,6 +469,7 @@ PcieShimEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
     reportf ("pcieshim: pipe-v9 PIPE vote=%x mux=%x\n",
         rd (GCC_PCIE_VOTE), rd (GCC_PCIE_PIPE_MUX));
     report_phy_clocks ("post");
+    report_rpmh_requests ();
   }
   for (Tries = 0; Tries < 10; Tries++) {
     PhyStatus = rd (PHY_BASE + PHY_PCS_STATUS1);

@@ -21,9 +21,12 @@ PRELUDE = r'''
 #include <wchar.h>
 typedef void VOID;
 typedef char CHAR8;
+typedef uint8_t UINT8;
+typedef uint16_t UINT16;
 typedef uint32_t UINT32;
 typedef uint64_t UINT64;
 typedef uintptr_t UINTN;
+typedef int BOOLEAN;
 typedef UINTN EFI_STATUS;
 typedef void *EFI_HANDLE;
 typedef struct { int unused; } EFI_SYSTEM_TABLE;
@@ -40,6 +43,11 @@ typedef struct { uint32_t a; uint16_t b, c; uint8_t d[8]; } EFI_GUID;
 #define VA_START va_start
 #define VA_END va_end
 #define CopyMem memcpy
+#define CompareMem memcmp
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define TRUE 1
+#define FALSE 0
+static UINT8 mock_cmd_db[0x20000];
 static int clock_protocol_present = 1;
 static UINTN mock_clock_interface[4] = {0x1000, 0x2000, 0x3000, 0x4000};
 static UINT32 MmioRead32(UINTN address);
@@ -116,6 +124,14 @@ static VOID access_address(UINTN address)
 }
 static UINT32 MmioRead32(UINTN address)
 {
+  if (address >= MARS_RSC_DRV2 && address < MARS_RSC_DRV2 + 0x10000) {
+    assert(PCIE_SHIM_STAGE == 5 && power_ready && phy_writes == 75);
+    if (address == MARS_RSC_DRV2 + MARS_RSC_TCS + 0x1c) return 1;
+    if (address == MARS_RSC_DRV2 + MARS_RSC_TCS + 0x34) return 0x40d04;
+    if (address == MARS_RSC_DRV2 + MARS_RSC_TCS + MARS_TCS_STRIDE + 0x34)
+      return 0x40d00;
+    return 0;
+  }
   access_address(address);
   if (address == GDSCR) return power_ready ? GDSC_STATUS | 1 : 1;
   if (address == PHY_BASE + PHY_PCS_STATUS1) {
@@ -232,6 +248,14 @@ int main(int argc, char **argv)
   atu_ready = strcmp(argv[1], "atu-timeout") != 0;
   drop_link = strcmp(argv[1], "link-lost") == 0;
   clock_protocol_present = strcmp(argv[1], "clock-protocol-missing") != 0;
+  int valid_cmd_db = strcmp(argv[1], "rpmh-db-absent") != 0;
+  if (valid_cmd_db) {
+    MARS_CMD_DB_HEADER header = {.Magic = 0x0c0330dbu};
+    const MARS_CMD_DB_ENTRY entry = {.Id = "ldob5", .Address = 0x40d00};
+    header.Slave[0] = (MARS_CMD_DB_SLAVE){.Id = 1, .Count = 1};
+    memcpy(mock_cmd_db, &header, sizeof(header));
+    memcpy(mock_cmd_db + sizeof(header), &entry, sizeof(entry));
+  }
   assert(PcieShimEntry(NULL, NULL) == EFI_SUCCESS);
   if (!power_ready) {
     assert(touched == 1 && all_writes == 1 && clock_writes == 0);
@@ -296,6 +320,9 @@ int main(int argc, char **argv)
       assert((present != NULL && present < line_end) == clock_protocol_present);
       assert(strstr(mPcieShimLog, "clk-v11 pre vote="));
       assert(strstr(mPcieShimLog, "clk-v11 post vote="));
+      assert(strstr(mPcieShimLog, valid_cmd_db
+                    ? "rpmh ldob5 addr=40d00 tcs=3 en=1"
+                    : "rpmh-v21 cmd-db magic=0"));
       if (phy_ready) assert(strstr(mPcieShimLog, "clk-v11 LTSSM ctrl="));
     }
   }
@@ -308,6 +335,10 @@ int main(int argc, char **argv)
 def check(source_path, output):
     source = ''.join(line for line in source_path.read_text().splitlines(True)
                      if not line.startswith('#include'))
+    db_base = '#define MARS_CMD_DB_BASE 0x80860000u'
+    if source.count(db_base) != 1:
+        raise ValueError('Expected physical command database base')
+    source = source.replace(db_base, '#define MARS_CMD_DB_BASE ((UINTN)mock_cmd_db)')
     anchor = '#define PCIE_SHIM_STAGE    1'
     if source.count(anchor) != 1:
         raise ValueError('Expected default stage 1')
@@ -326,7 +357,7 @@ def check(source_path, output):
             scenarios += ['root-invalid', 'atu-timeout', 'link-lost',
                           'xmlh-only', 'dll-only', 'endpoint-absent']
         if stage == 5:
-            scenarios += ['clock-protocol-missing']
+            scenarios += ['clock-protocol-missing', 'rpmh-db-absent']
         for scenario in scenarios:
             result = subprocess.run([str(binary), scenario],
                                     capture_output=True, text=True, timeout=5)
@@ -344,7 +375,7 @@ def check(source_path, output):
         assert result.returncode != 0 and 'Invalid PCIe shim stage' in result.stderr
         results.append({'stage': stage, 'invalid_stage_rejected': True})
     (output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
-    print('PASS: clock/reset sequencing and protocol discovery, 44 MMIO/protocol cases, 2 invalid stages')
+    print(f'PASS: {len(results) - 2} MMIO and protocol cases and 2 invalid stages')
 
 
 def main():

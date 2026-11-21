@@ -540,6 +540,24 @@ regulator votes. The remaining diagnosis needs UEFI-side power readings
 or a verified regulator interface. The prior Android regulator samples
 only describe the Android state.
 
+### 2026-11-22: v21 checks RPMh requests for PCIe and Wi-Fi supplies
+
+The stage-5 v21 image maps the Mars APPS RPMh DRV2 window at `0x18220000`
+and reads the bootloader's command database at `0x80860000`. The shim finds
+the controller resources `ldob5`, `ldob6`, and `cx.lvl` and the five
+QCA6490 resources `smpe2`, `smpb11`, `smpb10`, `smpc1`, and `smpb12`.
+The snapshot before link training has no matching programmed commands in
+the 16 command slots of each of DRV2's eight TCS units.
+The actual rail voltages and votes from other clients remain unknown.
+
+The independent boot image check and host RPMh checks passed. The phone
+reached the iOS desktop with all 46 init checks passing and returned to
+Android on slot b. PHY ready was `0x86`, LTSSM stopped at Detect.Active,
+and the QCA6490 remained unenumerated. The trial image SHA-256 is
+`4a68417ff59aae210d17fad346b2c5ce165d1b76211c1747ee20ee015195daca`.
+The SHA-256 of `diagnostics/wifi-rpmh-v21-s5-20261122/persist-after.bin`
+is `4c0a27e9757d90bed8a15c379d2a773848ed6552a4d38af80cd0fde9d265d5c1`.
+
 ## Current status (one screen)
 
 | Track | State |
@@ -554,8 +572,8 @@ only describe the Android state.
 | Run logs | **Working** — full log at the 8 GiB offset in `darwin`; check image markers for freshness |
 | GPU polish | **-31% stutter** (64.5→40 ms/frame): shader warm-up v2, sampled hash, TexSubImage reuse, EGLImage fail cache |
 | USB fastboot channel | **Partial** — enumeration flaky behind Qcom `UsbfnDwc`; 30 s idle auto-run fallback in loader |
-| UEFI PCIe shim | **v20 diagnostic desktop verified** — ClockDxe finds the PHY rate-change clock by name. Its frequency query returns EFI_PROTOCOL_ERROR. GCC readback shows the enabled branch and TCXO source selection |
-| Wi-Fi / PCIe (QCA6490) | **Android enumerates. Darwin link stalls.** Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`. v20 reaches Detect.Active with DLL inactive. UEFI PCIe and CNSS supply votes remain unimplemented |
+| UEFI PCIe shim | **v21 diagnostic desktop verified** — ClockDxe loads. RPMh command DB lookup resolves eight PCIe and QCA6490 resources |
+| Wi-Fi / PCIe (QCA6490) | **Android enumerates. Darwin link stalls.** Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`. v21 stops at Detect.Active. The APPS DRV2 snapshot has no matching commands for the target supplies |
 
 ## 2026-11-19 follow-up: bounded PCIe shim stages (v6)
 

@@ -1,6 +1,6 @@
 # Mars (Xiaomi 11 Pro) Port — Progress & Transfer Notes
 
-Last updated: 2026-11-20. This file is the hand-off: what is done and what is
+Last updated: 2026-11-22. This file is the hand-off: what is done and what is
 blocked. The former build server is no longer available.
 
 ## 2026-11-19: build server unavailable; local WSL prepared
@@ -465,6 +465,33 @@ at 0.88 V, L6 disabled and the CX vote at level 256; the pre-test Android
 snapshot had L6 enabled. These changing Android states further prevent
 using a post-boot regulator reading as evidence of the UEFI vote state.
 
+### 2026-11-22: v18 confirms the clock protocol is absent
+
+The stage-5 v18 diagnostic image adds a read-only UEFI `LocateProtocol` lookup
+for Qualcomm's clock protocol (`241afae6-885f-4f6c-a7ea-c28eab79c3e5`).
+The host harness passed 44 MMIO and protocol scenarios and two invalid-stage
+checks. An independent image reader confirmed the boot ID and preserved loader,
+kernel, DTB, and ramdisk. Of 94 FFS files in the decompressed FVMAIN, only
+`PcieShimDxe` changed from v11. The vendor `ClockDxe` driver
+(`4db5dea6-5302-4d1a-8a82-677a683b0d29`) is absent from FVMAIN and its DXE
+dispatch list.
+
+The temporary Fastboot boot reached the iOS desktop and passed all 46 init
+checks. Android returned on slot b, and the fresh log with the
+`wifi-clockapi-v18-s5` marker confirmed `EFI_NOT_FOUND`
+(`0x800000000000000e`). The PIPE source read back as TCXO (mux 2), the PHY
+reported ready (`0x86`), and PCIe still timed out at Detect.Active
+(`ELBI=0x1001`, `DLL=0x10110008`). The QCA6490 did not enumerate.
+
+The image SHA-256 is
+`25024dc0299df3d035f49f1b5d3c12725ae2022d690a11825e818cdb8b41a61a`.
+The 2 MiB log in `diagnostics/wifi-clockapi-v18-s5-20261120/persist-after.bin`
+has SHA-256
+`7933eae9d861d55cd4087df35dc92a6326fd2b4c150e118ac132fb827c5e8416`.
+The stock Mars and Venus ClockDxe binaries have identical SHA-256 hashes.
+Venus dispatches an upstream patched copy after VcsDxe. Check that driver's
+initialization and dependencies before adding it to a controlled Mars trial.
+
 ## Current status (one screen)
 
 | Track | State |
@@ -479,8 +506,8 @@ using a post-boot regulator reading as evidence of the UEFI vote state.
 | Run logs | **Working** — full log at the 8 GiB offset in `darwin`; check image markers for freshness |
 | GPU polish | **-31% stutter** (64.5→40 ms/frame): shader warm-up v2, sampled hash, TexSubImage reuse, EGLImage fail cache |
 | USB fastboot channel | **Partial** — enumeration flaky behind Qcom `UsbfnDwc`; 30 s idle auto-run fallback in loader |
-| UEFI PCIe shim | **Stage-11 clock state verified** — PHY reference branch is voted on at its 19.2 MHz TCXO source; TCXO reaches Detect.Active, DLL remains inactive |
-| Wi-Fi / PCIe (QCA6490) | **Android hardware works; temporary Darwin link down** — Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`; stages 4–5 and 11 stop before DLL-active; UEFI PCIe/CNSS RPMh supply votes remain unimplemented |
+| UEFI PCIe shim | **v18 desktop verified** — ClockDxe absent from FVMAIN and its protocol lookup returns EFI_NOT_FOUND. The PHY reference branch runs from the 19.2 MHz TCXO source |
+| Wi-Fi / PCIe (QCA6490) | **Android enumerates; Darwin link stalls** — Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`. v18 reaches Detect.Active with DLL inactive. UEFI PCIe/CNSS RPMh supply votes remain unimplemented |
 
 ## 2026-11-19 follow-up: bounded PCIe shim stages (v6)
 

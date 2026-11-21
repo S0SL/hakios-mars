@@ -58,6 +58,9 @@
 
 static EFI_GUID mPcieShimGuid =
   { 0xd7186a2c, 0x6b54, 0x47c0, { 0x91, 0xf4, 0x0a, 0x1d, 0x80, 0x52, 0x22, 0x49 } };
+/* ClockDxe's protocol GUID, identified in the installed Mars firmware. */
+static EFI_GUID mClockProtocolGuid =
+  { 0x241afae6, 0x885f, 0x4f6c, { 0xa7, 0xea, 0xc2, 0x8e, 0xab, 0x79, 0xc3, 0xe5 } };
 static CHAR8 mPcieShimLog[2048];
 static UINTN mPcieShimLogLength;
 
@@ -297,6 +300,17 @@ PcieShimEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
   reportf ("pcieshim: GDSCR ready value=%x\n", Value);
 
   if (PCIE_SHIM_STAGE >= 5) {
+    VOID *ClockInterface = NULL;
+    EFI_STATUS ClockStatus = gBS->LocateProtocol (&mClockProtocolGuid, NULL, &ClockInterface);
+
+    if (EFI_ERROR (ClockStatus) || ClockInterface == NULL) {
+      reportf ("pcieshim: clock-api locate status=%lx interface=%p\n",
+          (UINT64)ClockStatus, ClockInterface);
+    } else {
+      reportf ("pcieshim: clock-api locate status=%lx interface=%p present\n",
+          (UINT64)ClockStatus, ClockInterface);
+    }
+
     /* Match pci-msm.c: hold the endpoint in reset across RC/PHY reset. */
     set_perst (0);
     report_phy_clocks ("pre");

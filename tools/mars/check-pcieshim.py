@@ -22,6 +22,7 @@ PRELUDE = r'''
 typedef void VOID;
 typedef char CHAR8;
 typedef uint32_t UINT32;
+typedef uint64_t UINT64;
 typedef uintptr_t UINTN;
 typedef UINTN EFI_STATUS;
 typedef void *EFI_HANDLE;
@@ -30,6 +31,8 @@ typedef struct { uint32_t a; uint16_t b, c; uint8_t d[8]; } EFI_GUID;
 #define CONST const
 #define EFIAPI
 #define EFI_SUCCESS 0
+#define EFI_NOT_FOUND ((EFI_STATUS)0x800000000000000eULL)
+#define EFI_ERROR(Status) (((Status) & 0x8000000000000000ULL) != 0)
 #define EFI_VARIABLE_BOOTSERVICE_ACCESS 2
 #define DEBUG_ERROR 0
 #define DEBUG(arguments) ((void)0)
@@ -37,11 +40,17 @@ typedef struct { uint32_t a; uint16_t b, c; uint8_t d[8]; } EFI_GUID;
 #define VA_START va_start
 #define VA_END va_end
 #define CopyMem memcpy
+static int clock_protocol_present = 1;
+static UINTN mock_clock_interface[4] = {0x1000, 0x2000, 0x3000, 0x4000};
 static UINT32 MmioRead32(UINTN address);
 static VOID MmioWrite32(UINTN address, UINT32 value);
 static EFI_STATUS mock_stall(UINTN delay);
 static EFI_STATUS mock_variable(const wchar_t *, EFI_GUID *, UINT32, UINTN, VOID *);
-static struct { EFI_STATUS (*Stall)(UINTN); } boot = {mock_stall};
+static EFI_STATUS mock_locate(EFI_GUID *, VOID *, VOID **);
+static struct {
+  EFI_STATUS (*Stall)(UINTN);
+  EFI_STATUS (*LocateProtocol)(EFI_GUID *, VOID *, VOID **);
+} boot = {mock_stall, mock_locate};
 static struct {
   EFI_STATUS (*SetVariable)(const wchar_t *, EFI_GUID *, UINT32, UINTN, VOID *);
 } runtime = {mock_variable};
@@ -198,6 +207,17 @@ static EFI_STATUS mock_variable(const wchar_t *name, EFI_GUID *guid,
   assert(attributes == EFI_VARIABLE_BOOTSERVICE_ACCESS && size < 2048);
   return EFI_SUCCESS;
 }
+static EFI_STATUS mock_locate(EFI_GUID *guid, VOID *registration, VOID **interface)
+{
+  (void)registration;
+  assert(guid->a == 0x241afae6 && guid->b == 0x885f && guid->c == 0x4f6c);
+  if (!clock_protocol_present) {
+    *interface = NULL;
+    return EFI_NOT_FOUND;
+  }
+  *interface = mock_clock_interface;
+  return EFI_SUCCESS;
+}
 int main(int argc, char **argv)
 {
   assert(argc == 2);
@@ -211,6 +231,7 @@ int main(int argc, char **argv)
   root_valid = strcmp(argv[1], "root-invalid") != 0;
   atu_ready = strcmp(argv[1], "atu-timeout") != 0;
   drop_link = strcmp(argv[1], "link-lost") == 0;
+  clock_protocol_present = strcmp(argv[1], "clock-protocol-missing") != 0;
   assert(PcieShimEntry(NULL, NULL) == EFI_SUCCESS);
   if (!power_ready) {
     assert(touched == 1 && all_writes == 1 && clock_writes == 0);
@@ -264,6 +285,15 @@ int main(int argc, char **argv)
       assert(strstr(mPcieShimLog, "endpoint vendor=17cb device=1103"));
     }
     if (PCIE_SHIM_STAGE >= 5) {
+      const CHAR8 *clock_log = strstr(mPcieShimLog, "clock-api locate status=");
+      assert(clock_log != NULL);
+      assert(strstr(clock_log, clock_protocol_present
+                    ? "clock-api locate status=0 interface="
+                    : "clock-api locate status=800000000000000e interface=") == clock_log);
+      const CHAR8 *line_end = strchr(clock_log, '\n');
+      const CHAR8 *present = strstr(clock_log, " present");
+      assert(line_end != NULL);
+      assert((present != NULL && present < line_end) == clock_protocol_present);
       assert(strstr(mPcieShimLog, "clk-v11 pre vote="));
       assert(strstr(mPcieShimLog, "clk-v11 post vote="));
       if (phy_ready) assert(strstr(mPcieShimLog, "clk-v11 LTSSM ctrl="));
@@ -295,6 +325,8 @@ def check(source_path, output):
         if stage >= 4:
             scenarios += ['root-invalid', 'atu-timeout', 'link-lost',
                           'xmlh-only', 'dll-only', 'endpoint-absent']
+        if stage == 5:
+            scenarios += ['clock-protocol-missing']
         for scenario in scenarios:
             result = subprocess.run([str(binary), scenario],
                                     capture_output=True, text=True, timeout=5)
@@ -312,7 +344,7 @@ def check(source_path, output):
         assert result.returncode != 0 and 'Invalid PCIe shim stage' in result.stderr
         results.append({'stage': stage, 'invalid_stage_rejected': True})
     (output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
-    print('PASS: clock/reset sequencing, 42 staged MMIO cases including both PIPE parents, 2 invalid stages')
+    print('PASS: clock/reset sequencing and protocol discovery, 44 MMIO/protocol cases, 2 invalid stages')
 
 
 def main():

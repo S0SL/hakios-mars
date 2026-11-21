@@ -88,6 +88,8 @@ static UINTN waited;
 static uint32_t vote = 0xa5000040, clkref = 0x42;
 static uint32_t pipe_mux = 0xa5000002;
 static uint32_t core_reset = 0xa5000010, phy_reset = 0xa5000020;
+static uint32_t clkreq_config = 0x80000203;
+static unsigned clkreq_config_writes, clkreq_data_writes;
 static uint32_t atu[7];
 static VOID access_address(UINTN address)
 {
@@ -134,6 +136,7 @@ static UINT32 MmioRead32(UINTN address)
   }
   access_address(address);
   if (address == GDSCR) return power_ready ? GDSC_STATUS | 1 : 1;
+  if (address == TLMM_BASE + 95u * 0x1000u) return clkreq_config;
   if (address == PHY_BASE + PHY_PCS_STATUS1) {
     if (PCIE_SHIM_STAGE >= 5) assert(phy_writes == 75 && (vote & 0x10));
     return phy_ready ? 0 : 0x48;
@@ -165,6 +168,12 @@ static VOID MmioWrite32(UINTN address, UINT32 value)
 {
   access_address(address);
   all_writes++;
+  if (address == TLMM_BASE + 95u * 0x1000u) {
+    assert(phy_writes == 0);
+    clkreq_config = value;
+    clkreq_config_writes++;
+  }
+  if (address == TLMM_BASE + 95u * 0x1000u + 4) clkreq_data_writes++;
   if (address == PARF_BASE + 0x350 && value == 0) dbi_routed = 1;
   if (address >= DBI_BASE + 0x1000 && address <= DBI_BASE + 0x1018) {
     assert(link_ready && root_valid);
@@ -269,6 +278,8 @@ int main(int argc, char **argv)
       assert(core_asserts == 1 && core_deasserts == 1 && core_reset == 0xa5000010);
       assert(phy_asserts == 1 && phy_deasserts == 1 && phy_reset == 0xa5000020);
       assert(phy_writes == 75);
+      assert(clkreq_config == 0x80000007 && clkreq_config_writes == 1);
+      assert(clkreq_data_writes == 0);
       assert(strstr(mPcieShimLog, "pipe-v9 mux"));
       assert(strstr(mPcieShimLog, "pipe-v9 core reset"));
       assert(strstr(mPcieShimLog, "pipe-v9 phy reset"));

@@ -179,6 +179,17 @@ set_gpio (UINT32 Gpio)
 }
 
 static VOID
+set_clkreq (VOID)
+{
+  UINTN Base = TLMM_BASE + (95u * 0x1000u);
+  /* Mars pinctrl selects pcie0_clkreqn (function 1), with a pull-up
+     and 2 mA drive strength. Leave GPIO output disabled. */
+  UINT32 Config = rd (Base);
+  Config &= ~((1u << 9) | (7u << 6) | (0xfu << 2) | 3u);
+  wr (Base, Config | (1u << 2) | 3u);
+}
+
+static VOID
 set_perst (UINT32 Level)
 {
   UINTN Base = TLMM_BASE + (94u * 0x1000u);
@@ -448,7 +459,11 @@ PcieShimEntry (EFI_HANDLE Image, EFI_SYSTEM_TABLE *System)
   wr (PARF_BASE, 0x365e);
   wr (PARF_BASE + 0x358, 0x04000000);
 
-  set_gpio (95);
+  if (PCIE_SHIM_STAGE >= 5) {
+    set_clkreq ();
+  } else {
+    set_gpio (95);
+  }
   set_gpio (64);
   gBS->Stall (1000);
   reportf ("pcieshim: GPIO95 CLKREQ cfg=%x io=%x; GPIO64 WLAN_EN cfg=%x io=%x\n",

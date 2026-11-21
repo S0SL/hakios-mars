@@ -558,6 +558,26 @@ and the QCA6490 remained unenumerated. The trial image SHA-256 is
 The SHA-256 of `diagnostics/wifi-rpmh-v21-s5-20261122/persist-after.bin`
 is `4c0a27e9757d90bed8a15c379d2a773848ed6552a4d38af80cd0fde9d265d5c1`.
 
+### 2026-11-22: v22 corrects the PCIe CLKREQ# pin
+
+The live Mars device tree assigns GPIO95 to `pcie0_clkreqn` with a pull-up
+and 2 mA drive strength. Xiaomi's Lahaina pinctrl table assigns that function
+selector 1. The stage-5 shim now selects it and clears the GPIO output enable.
+The host harness verifies the pin configuration and that the shim leaves
+the GPIO95 output latch alone.
+
+Compared with v21, only PcieShimDxe changed among the 95 files in FVMAIN.
+The phone reached the desktop and passed all 46 init checks. The fresh
+`wifi-clkreq-v22-s5` log reads GPIO95 configuration `0x7`, compared with
+`0x203` in v21. The PHY was ready, but training still stopped at
+Detect.Active with an inactive DLL (`ELBI=0x1001`, `DLL=0x10110008`).
+The QCA6490 did not enumerate. Android subsequently booted on slot b.
+
+The image SHA-256 is
+`a653938699d67763120ec11f40036e2de1711810b53e64d0d56d5298e28c85ee`.
+The log at `diagnostics/wifi-clkreq-v22-s5-20261122/persist-after.bin` has
+SHA-256 `14e1733cf92c01868b0d5a2deb06fecd887e9b44d5a9228f3ec531ea3d1f6e2f`.
+
 ## Current status (one screen)
 
 | Track | State |
@@ -572,8 +592,8 @@ is `4c0a27e9757d90bed8a15c379d2a773848ed6552a4d38af80cd0fde9d265d5c1`.
 | Run logs | **Working** — full log at the 8 GiB offset in `darwin`; check image markers for freshness |
 | GPU polish | **-31% stutter** (64.5→40 ms/frame): shader warm-up v2, sampled hash, TexSubImage reuse, EGLImage fail cache |
 | USB fastboot channel | **Partial** — enumeration flaky behind Qcom `UsbfnDwc`; 30 s idle auto-run fallback in loader |
-| UEFI PCIe shim | **v21 diagnostic desktop verified** — ClockDxe loads. RPMh command DB lookup resolves eight PCIe and QCA6490 resources |
-| Wi-Fi / PCIe (QCA6490) | **Android enumerates. Darwin link stalls.** Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`. v21 stops at Detect.Active. The APPS DRV2 snapshot has no matching commands for the target supplies |
+| UEFI PCIe shim | **v22 diagnostic desktop verified**. GPIO95 reads back as PCIe CLKREQ#. ClockDxe loads and RPMh command DB lookup resolves eight resources |
+| Wi-Fi / PCIe (QCA6490) | **Android enumerates. Darwin link stalls.** Android sees `17cb:1103` at 5 GT/s x1 with CNSS/`wlan0`. v22 stops at Detect.Active. UEFI rail states are unverified |
 
 ## 2026-11-19 follow-up: bounded PCIe shim stages (v6)
 

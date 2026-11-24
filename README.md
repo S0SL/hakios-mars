@@ -1,5 +1,7 @@
 # HakiOS on Xiaomi 11 Pro (mars)
 
+> ⚠️ **实验性研究项目：存在硬件损坏与数据丢失风险，动手前请阅读 [免责声明](DISCLAIMER.md)。**
+
 **在小米 11 Pro（mars，SM8350，12GB）上运行苹果开源的 Darwin 内核（XNU）**——
 [HakiOS](https://github.com/oosexgang/hakios-xnu-kernel) 的设备移植。
 研究台架而非 ROM：通过 `fastboot boot` 从内存启动，重启即可回到安卓。
